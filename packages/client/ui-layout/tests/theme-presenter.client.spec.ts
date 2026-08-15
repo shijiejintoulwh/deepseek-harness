@@ -6,15 +6,23 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ThemeSnapshot } from '@deepseek-ai/dsh-client-ui-theme/client'
-import { DARK_ATTRIBUTE, ThemePresenter } from '@deepseek-ai/dsh-client-ui-layout/src/client/theme-presenter.ts'
+import {
+  DARK_ATTRIBUTE,
+  THEME_PREFERENCE_ATTRIBUTE,
+  ThemePresenter,
+} from '@deepseek-ai/dsh-client-ui-layout/src/client/theme-presenter.ts'
 
 const LIGHT_THEME_COLOR = 'rgb(255, 255, 255)'
 const DARK_THEME_COLOR = 'rgb(21, 21, 23)'
 
-function snapshot(colorScheme: 'light' | 'dark', tokens: Record<string, string> = {}): ThemeSnapshot {
+function snapshot(
+  colorScheme: 'light' | 'dark',
+  tokens: Record<string, string> = {},
+  preference: ThemeSnapshot['preference'] = colorScheme,
+): ThemeSnapshot {
   // The presenter must key off colorScheme, not the id — keep them distinct.
   const active = { id: `${colorScheme}-test`, colorScheme, tokens }
-  return { preference: colorScheme, active, themes: [active], revision: 1 }
+  return { preference, active, themes: [active], revision: 1 }
 }
 
 function clearThemePresentation(): void {
@@ -29,6 +37,7 @@ beforeEach(() => {
   clearThemePresentation()
   document.documentElement.style.removeProperty('color-scheme')
   document.body.removeAttribute(DARK_ATTRIBUTE)
+  document.body.removeAttribute(THEME_PREFERENCE_ATTRIBUTE)
   document.body.removeAttribute('style')
   const style = document.createElement('style')
   style.dataset.themePresenterTest = ''
@@ -47,19 +56,22 @@ describe('ThemePresenter', () => {
     presenter.apply(snapshot('light'))
     expect(document.documentElement.style.colorScheme).toBe('light')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(false)
+    expect(document.body.getAttribute(THEME_PREFERENCE_ATTRIBUTE)).toBe('light')
     expect(themeColorMeta()?.content).toBe(LIGHT_THEME_COLOR)
   })
 
   it('dark scheme sets root color-scheme, the attribute, and metadata; switching to light updates one node', () => {
     const presenter = new ThemePresenter()
-    presenter.apply(snapshot('dark'))
+    presenter.apply(snapshot('dark', {}, 'system'))
     const meta = themeColorMeta()
     expect(document.documentElement.style.colorScheme).toBe('dark')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(true)
+    expect(document.body.getAttribute(THEME_PREFERENCE_ATTRIBUTE)).toBe('system')
     expect(meta?.content).toBe(DARK_THEME_COLOR)
     presenter.apply(snapshot('light'))
     expect(document.documentElement.style.colorScheme).toBe('light')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(false)
+    expect(document.body.getAttribute(THEME_PREFERENCE_ATTRIBUTE)).toBe('light')
     expect(themeColorMeta()).toBe(meta)
     expect(meta?.content).toBe(LIGHT_THEME_COLOR)
     expect(document.head.querySelectorAll('meta[name="theme-color"]')).toHaveLength(1)
@@ -84,6 +96,7 @@ describe('ThemePresenter', () => {
     presenter.dispose()
     expect(document.documentElement.style.colorScheme).toBe('')
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(false)
+    expect(document.body.hasAttribute(THEME_PREFERENCE_ATTRIBUTE)).toBe(false)
     expect(document.body.style.getPropertyValue('--dsw-alias-bg')).toBe('')
     expect(document.body.style.getPropertyValue('--foreign')).toBe('kept')
     expect(meta?.isConnected).toBe(false)

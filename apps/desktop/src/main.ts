@@ -13,9 +13,13 @@ import {
   app,
   BrowserWindow,
   dialog,
+  ipcMain,
   Menu,
+  nativeTheme,
+  type IpcMainEvent,
   type MenuItemConstructorOptions,
   shell,
+  Tray,
 } from 'electron'
 import {
   DESKTOP_PROTOCOL_VERSION,
@@ -45,10 +49,15 @@ import {
   type RuntimeState,
 } from './runtime-model.ts'
 import { RuntimeStore } from './runtime-store.ts'
+import { parseShellThemeReport, shellBackgroundColor, SHELL_THEME_CHANNEL } from './shell-theme.ts'
+import { installCloseToTray, showTrayWindow } from './tray-lifecycle.ts'
+import { describeUpdateFailure } from './update-error.ts'
 import { RuntimeUpdater, type RuntimeUpdateCheck } from './updater.ts'
 
 const PRODUCT_DIRECTORY = 'DeepSeekHarnessDesktop'
 const HOME_IMPORT_DECISION = 'home-import-decision-v1.json'
+const SHELL_THEME_START_TIMEOUT_MS = 5_000
+const SESSION_END_CLOSE_WINDOW_MS = 30_000
 const originalEnvironment = { ...process.env }
 const smokeTest = process.env.DSH_DESKTOP_SMOKE_TEST === '1'
 const smokeDataRoot = smokeTest ? process.env.DSH_DESKTOP_SMOKE_DATA_ROOT : undefined
@@ -67,6 +76,10 @@ let runtimeStore: RuntimeStore | null = null
 let runtimeUpdater: RuntimeUpdater | null = null
 let runtimeState: RuntimeState | null = null
 let runtimeLog: WriteStream | null = null
+let desktopTray: Tray | null = null
+let removeCloseToTray: (() => void) | null = null
+let sessionEndReset: ReturnType<typeof setTimeout> | null = null
+let sessionEnding = false
 let quitting = false
 let updateInProgress = false
 
@@ -111,6 +124,65 @@ function seedRuntimeDirectory(): string {
 function desktopIconPath(): string {
   if (app.isPackaged) return join(process.resourcesPath, 'icon.ico')
   return join(import.meta.dirname, '..', 'build', 'icon.ico')
+}
+
+/** Restore the retained main window from the tray or a second launch. */
+function showMainWindow(): void {
+  if (mainWindow !== null) showTrayWindow(mainWindow)
+}
+
+/** Destroy tray-owned listeners and native resources immediately before exit. */
+function destroyTray(): void {
+  if (sessionEndReset !== null) clearTimeout(sessionEndReset)
+  sessionEndReset = null
+  sessionEnding = false
+  removeCloseToTray?.()
+  removeCloseToTray = null
+  if (desktopTray !== null && !desktopTray.isDestroyed()) desktopTray.destroy()
+  desktopTray = null
+}
+
+/** Install the Windows notification-area entry and close-to-tray behavior. */
+function installTray(window: BrowserWindow): void {
+  if (desktopTray !== null) throw new Error('desktop tray is already installed')
+  const nextTray = new Tray(desktopIconPath())
+  const show = (): void => { showTrayWindow(window) }
+  try {
+    nextTray.setToolTip('DeepSeek Harness Desktop')
+    nextTray.setContextMenu(Menu.buildFromTemplate([
+      { label: '打开 DeepSeek Harness', click: show },
+      { label: '检查 Harness 更新', click: () => { show(); void checkForUpdates(true) } },
+      { type: 'separator' },
+      { label: '退出', click: () => { app.quit() } },
+    ]))
+    nextTray.on('click', show)
+    nextTray.on('balloon-click', show)
+    removeCloseToTray = installCloseToTray(window, () => quitting || sessionEnding, () => {
+      if (smokeTest) return
+      nextTray.displayBalloon({
+        icon: desktopIconPath(),
+        iconType: 'custom',
+        title: 'DeepSeek Harness 仍在运行',
+        content: '窗口已隐藏到系统托盘。右键托盘图标并选择“退出”可完全关闭。',
+        noSound: true,
+        respectQuietTime: true,
+      })
+    })
+    desktopTray = nextTray
+  } catch (error) {
+    removeCloseToTray?.()
+    removeCloseToTray = null
+    nextTray.destroy()
+    throw error
+  }
+  window.on('query-session-end', () => {
+    sessionEnding = true
+    if (sessionEndReset !== null) clearTimeout(sessionEndReset)
+    sessionEndReset = setTimeout(() => {
+      sessionEndReset = null
+      sessionEnding = false
+    }, SESSION_END_CLOSE_WINDOW_MS)
+  })
 }
 
 /** Import a legacy home after consent, or from the isolated smoke fixture. */
@@ -228,6 +300,28 @@ function applyNavigationPolicy(window: BrowserWindow, runtimeUrl: string): void 
   })
 }
 
+/** Keep Electron-rendered Windows chrome aligned with the trusted Harness page. */
+function installShellThemeSync(window: BrowserWindow): Promise<void> {
+  let resolveFirstReport: (() => void) | null = null
+  const firstReport = new Promise<void>((resolveFirst) => {
+    resolveFirstReport = resolveFirst
+  })
+  const onTheme = (event: IpcMainEvent, value: unknown): void => {
+    if (event.sender !== window.webContents) return
+    const report = parseShellThemeReport(value)
+    if (report === null) return
+    nativeTheme.themeSource = report.source
+    window.setBackgroundColor(shellBackgroundColor(report.colorScheme))
+    resolveFirstReport?.()
+    resolveFirstReport = null
+  }
+  ipcMain.on(SHELL_THEME_CHANNEL, onTheme)
+  window.once('closed', () => {
+    ipcMain.removeListener(SHELL_THEME_CHANNEL, onTheme)
+  })
+  return firstReport
+}
+
 /** Create the secure main window for the ordinary Harness Web UI. */
 async function createMainWindow(runtimeUrl: string): Promise<BrowserWindow> {
   const window = new BrowserWindow({
@@ -236,21 +330,27 @@ async function createMainWindow(runtimeUrl: string): Promise<BrowserWindow> {
     minWidth: 960,
     minHeight: 640,
     show: false,
-    backgroundColor: '#f6f7f9',
+    backgroundColor: shellBackgroundColor(nativeTheme.shouldUseDarkColors ? 'dark' : 'light'),
     title: 'DeepSeek Harness',
     icon: desktopIconPath(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: join(import.meta.dirname, 'preload.cjs'),
       sandbox: true,
       webSecurity: true,
     },
   })
   applyNavigationPolicy(window, runtimeUrl)
-  window.once('ready-to-show', () => {
-    if (!smokeTest) window.show()
-  })
+  const themeReady = installShellThemeSync(window)
   await window.loadURL(runtimeUrl)
+  await Promise.race([
+    themeReady,
+    delay(SHELL_THEME_START_TIMEOUT_MS).then(() => {
+      throw new Error('Harness page did not report its theme before the desktop startup timeout')
+    }),
+  ])
+  if (!smokeTest) window.show()
   return window
 }
 
@@ -282,7 +382,13 @@ async function settlePendingRuntime(selectedId: string, runtime: RunningRuntime)
 /** Relaunch after the exact child process reaches quiescence. */
 async function relaunchDesktop(): Promise<void> {
   quitting = true
-  await quiesceDesktop()
+  try {
+    await quiesceDesktop()
+  } catch (error) {
+    quitting = false
+    throw error
+  }
+  destroyTray()
   app.relaunch()
   app.exit(0)
 }
@@ -380,7 +486,7 @@ async function checkForUpdates(manual: boolean): Promise<void> {
       await dialog.showMessageBox(mainWindow, {
         type: 'error',
         message: '无法检查 Harness 更新',
-        detail: error instanceof Error ? error.message : String(error),
+        detail: describeUpdateFailure(error),
       })
     }
   } finally {
@@ -459,21 +565,27 @@ async function bootstrap(): Promise<void> {
   runningRuntime = started.runtime
   runtimeState = started.state
   mainWindow = await createMainWindow(runningRuntime.url)
-  installMenu()
-
-  if (smokeTest) {
-    quitting = true
-    await quiesceDesktop()
-    app.exit(0)
-    return
-  }
-
   runtimeUpdater = new RuntimeUpdater(
     new GitHubRuntimeProvider(RUNTIME_RELEASE_REPOSITORY, RUNTIME_RELEASE_TAG_PREFIX, RUNTIME_MANIFEST_PUBLIC_KEY_PEM),
     runtimeStore,
     app.getVersion(),
     DESKTOP_PROTOCOL_VERSION,
   )
+  installMenu()
+  installTray(mainWindow)
+
+  if (smokeTest) {
+    mainWindow.close()
+    if (mainWindow.isDestroyed() || desktopTray === null || desktopTray.isDestroyed()) {
+      throw new Error('desktop tray did not retain the main window during smoke test')
+    }
+    quitting = true
+    await quiesceDesktop()
+    destroyTray()
+    app.exit(0)
+    return
+  }
+
   void settlePendingRuntime(started.selectedId, runningRuntime).catch((error: unknown) => {
     writeRuntimeOutput('stderr', `pending runtime settlement failed: ${String(error)}\n`)
   })
@@ -482,7 +594,10 @@ async function bootstrap(): Promise<void> {
       if (quitting) return
       const options = { type: 'error' as const, message: 'Harness 运行时已退出', detail: JSON.stringify(exit) }
       if (mainWindow === null) await dialog.showMessageBox(options)
-      else await dialog.showMessageBox(mainWindow, options)
+      else {
+        showMainWindow()
+        await dialog.showMessageBox(mainWindow, options)
+      }
       await relaunchDesktop()
     })
     .catch((error: unknown) => {
@@ -497,9 +612,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow === null) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
+    showMainWindow()
   })
   app.on('before-quit', (event) => {
     if (quitting) return
@@ -517,6 +630,7 @@ if (!app.requestSingleInstanceLock()) {
         })
         return
       }
+      destroyTray()
       app.exit(0)
     })()
   })
@@ -544,6 +658,7 @@ if (!app.requestSingleInstanceLock()) {
     } catch (cleanupError) {
       process.stderr.write(`desktop startup cleanup failed: ${String(cleanupError)}\n`)
     }
+    destroyTray()
     app.exit(1)
   })
 }

@@ -6,6 +6,7 @@ directories:
   buildResources: build
 files:
   - lib/main.js
+  - lib/preload.cjs
   - lib/update-renderer.js
   - ui/**/*
   - package.json

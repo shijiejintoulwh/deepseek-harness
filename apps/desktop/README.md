@@ -24,11 +24,15 @@ The installer, uninstaller, executable, shortcuts, and Electron windows use the 
 
 Electron user data, including the desktop-specific `DSH_HOME`, is stored under `%APPDATA%\DeepSeekHarnessDesktop`; versioned runtimes and the atomic selection document are stored under `%LOCALAPPDATA%\DeepSeekHarnessDesktop` and never under the selected installation directory.
 
+The main window waits for its sandboxed CommonJS preload to report the Web application's resolved color scheme and whether the persisted preference follows the operating system. The host validates the sending window and fixed report fields before applying Electron's native theme and the matching BrowserWindow background, so the Windows title bar, application menu, dialogs, and Web content switch together without exposing an Electron API to the page.
+
+Closing the main window hides it in the Windows notification area while the Harness runtime keeps running. Clicking the tray icon restores and focuses the window; its context menu opens the window, checks for Harness updates, or performs an explicit full exit. The first intercepted close displays a quiet notification explaining how to exit.
+
 On first launch, the host offers to copy an existing CLI Harness home into the desktop-specific home without modifying the source. Rebuildable `node_modules` trees are omitted instead of following package-manager junctions, and every link outside those dependency trees is rejected. An empty home left by an interrupted import can be retried directly; if desktop data already exists, the host offers once to preserve it as a sibling backup before importing and automatically restores it if the replacement import fails.
 
 The host starts the selected runtime with its bundled Node 24 executable, accepts only the announced `http://127.0.0.1` origin, waits for the real Web shell health marker, and waits for the child process and log stream to settle before exit or relaunch.
 
-At startup the host checks the latest `runtime-v*` release, prompts before downloading, verifies the Ed25519 signature before parsing metadata, enforces compatibility, verifies size and SHA-256, rejects unsafe ZIP paths and links, and installs into a fresh version directory before staging it for restart.
+At startup the host checks the latest `runtime-v*` release, prompts before downloading, verifies the Ed25519 signature before parsing metadata, enforces compatibility, verifies size and SHA-256, rejects unsafe ZIP paths and links, and installs into a fresh version directory before staging it for restart. Discovery prefers the anonymous GitHub REST feed; when GitHub reports a rate limit, the host honors its reset time and uses the public Releases Atom feed with direct signed-asset URLs instead of repeating the blocked REST request. If both discovery paths are unavailable, a manual check reports an estimated retry interval while the automatic check remains silent.
 
 A candidate becomes active only after its page loads and remains alive for 30 seconds; failed candidate launches retain the current runtime, two failed attempts reject the candidate, and the menu can swap the current and previous versions for a manual rollback.
 

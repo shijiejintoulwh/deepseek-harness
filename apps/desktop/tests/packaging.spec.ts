@@ -15,6 +15,18 @@ describe('desktop Windows branding', () => {
     expect(config).toContain('  installerHeaderIcon: build/icon.ico')
   })
 
+  it('packages the CommonJS preload required by the sandboxed renderer', async () => {
+    const builder = (await readFile(join(desktopRoot, 'electron-builder.yml'), 'utf8')).replaceAll('\r\n', '\n')
+    const bundler = (await readFile(join(desktopRoot, 'tsdown.preload.config.ts'), 'utf8')).replaceAll('\r\n', '\n')
+    const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8')) as { scripts: { build: string } }
+
+    expect(builder).toContain('  - lib/preload.cjs\n')
+    expect(bundler).toContain("entry: ['src/preload.ts']")
+    expect(bundler).toContain("format: ['cjs']")
+    expect(bundler).toContain('fixedExtension: true')
+    expect(manifest.scripts.build).toContain('tsdown --config tsdown.preload.config.ts')
+  })
+
   it('contains the standard Windows icon sizes', async () => {
     const icon = await readFile(join(desktopRoot, 'build', 'icon.ico'))
     expect(icon.readUInt16LE(0)).toBe(0)

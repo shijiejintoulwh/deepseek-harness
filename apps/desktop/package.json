@@ -1,12 +1,12 @@
 {
   "name": "dsh-desktop",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "description": "Windows Electron host for an independently updatable DeepSeek Harness runtime",
   "type": "module",
   "main": "lib/main.js",
   "scripts": {
-    "build": "tsc -b && tsdown",
+    "build": "tsc -b && tsdown && tsdown --config tsdown.preload.config.ts",
     "dev": "pnpm run build && electron .",
     "dist": "pnpm run build && electron-builder --win nsis --x64 --config electron-builder.yml"
   },

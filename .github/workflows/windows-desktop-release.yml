@@ -11,7 +11,7 @@ on:
         description: desktop-v* tag created only when publish is enabled.
         required: true
         type: string
-        default: desktop-v1.0.2
+        default: desktop-v1.0.3
       publish:
         description: Publish a desktop-v* GitHub Release for manual shell upgrades.
         required: true

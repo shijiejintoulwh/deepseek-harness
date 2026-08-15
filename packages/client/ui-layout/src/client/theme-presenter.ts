@@ -1,16 +1,19 @@
 /**
  * Global theme DOM applier: projects the resolved ThemeSnapshot onto the
  * document — `html { color-scheme }` for native UA chrome (scrollbars, form
- * controls), `body[data-ds-dark-theme]` for the token palette, the active
- * theme's alias-token overrides as inline CSS variables on body, and one
- * presenter-owned `meta[name="theme-color"]` for surrounding browser UI. Pure
- * DOM writes, no React involvement; the presenter only ever retracts what it
- * wrote itself, so foreign attributes, metadata, and inline styles survive.
+ * controls), body attributes for the token palette and persisted preference,
+ * the active theme's alias-token overrides as inline CSS variables on body,
+ * and one presenter-owned `meta[name="theme-color"]` for surrounding browser
+ * UI. Pure DOM writes, no React involvement; the presenter only ever retracts
+ * what it wrote itself, so foreign attributes, metadata, and inline styles survive.
  */
 import type { ThemeSnapshot } from '@deepseek-ai/dsh-client-ui-theme/client'
 
 /** Body attribute selecting the dark base palette in the token stylesheets. */
 export const DARK_ATTRIBUTE = 'data-ds-dark-theme'
+
+/** Body attribute exposing the persisted preference to native presentation hosts. */
+export const THEME_PREFERENCE_ATTRIBUTE = 'data-ds-theme-preference'
 
 /** Applies theme snapshots to the document; one instance per plugin fiber. */
 export class ThemePresenter {
@@ -38,6 +41,7 @@ export class ThemePresenter {
     const scheme = snapshot.active.colorScheme
     document.documentElement.style.colorScheme = scheme
     const body = document.body
+    body.setAttribute(THEME_PREFERENCE_ATTRIBUTE, snapshot.preference)
     if (scheme === 'dark') body.setAttribute(DARK_ATTRIBUTE, '')
     else body.removeAttribute(DARK_ATTRIBUTE)
     for (const name of this.appliedTokens) body.style.removeProperty(name)
@@ -55,6 +59,7 @@ export class ThemePresenter {
     document.documentElement.style.removeProperty('color-scheme')
     const body = document.body
     body.removeAttribute(DARK_ATTRIBUTE)
+    body.removeAttribute(THEME_PREFERENCE_ATTRIBUTE)
     for (const name of this.appliedTokens) body.style.removeProperty(name)
     this.appliedTokens = []
     this.themeColorMeta.remove()

@@ -36,6 +36,23 @@ const releasesSchema = z.array(releaseSchema)
 type GitHubRelease = z.infer<typeof releaseSchema>
 type GitHubAsset = z.infer<typeof releaseAssetSchema>
 
+const API_RESPONSE_LIMIT = 2 * 1024 * 1024
+const ATOM_RESPONSE_LIMIT = 512 * 1024
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000
+const safeReleaseTag = /^[0-9A-Za-z][0-9A-Za-z._-]*$/
+
+/** GitHub REST discovery is unavailable until the reported retry time. */
+export class GitHubRateLimitError extends Error {
+  /**
+   * @param retryAt - Unix epoch milliseconds at or after which REST discovery may resume.
+   * @param options - optional underlying fallback failure.
+   */
+  constructor(readonly retryAt: number, options?: ErrorOptions) {
+    super('GitHub REST API rate limit exceeded', options)
+    this.name = 'GitHubRateLimitError'
+  }
+}
+
 /** Signed release selected from the repository feed. */
 export interface AvailableRuntimeRelease {
   /** Validated signed manifest. */
@@ -59,17 +76,16 @@ export interface DownloadProgress {
 }
 
 /** Headers used for unauthenticated public GitHub API requests. */
-function githubHeaders(): HeadersInit {
+function githubHeaders(accept = 'application/vnd.github+json'): HeadersInit {
   return {
-    Accept: 'application/vnd.github+json',
+    Accept: accept,
     'User-Agent': 'DeepSeek-Harness-Desktop',
     'X-GitHub-Api-Version': '2022-11-28',
   }
 }
 
-/** Fetch a successful bounded response into memory. */
-async function fetchBounded(url: string, limit: number): Promise<Buffer> {
-  const response = await fetch(url, { headers: githubHeaders() })
+/** Read one successful response without allowing unbounded remote bytes. */
+async function readBounded(response: Response, url: string, limit: number): Promise<Buffer> {
   if (!response.ok) throw new Error(`GitHub request ${url} failed with ${response.status}`)
   if (response.body === null) throw new Error(`GitHub request ${url} returned no body`)
   const contentLength = response.headers.get('content-length')
@@ -91,6 +107,43 @@ async function fetchBounded(url: string, limit: number): Promise<Buffer> {
     chunks.push(result.value)
   }
   return Buffer.concat(chunks, size)
+}
+
+/** Fetch a successful bounded response into memory. */
+async function fetchBounded(url: string, limit: number, accept?: string): Promise<Buffer> {
+  const response = await fetch(url, { headers: githubHeaders(accept) })
+  return readBounded(response, url, limit)
+}
+
+/** Parse GitHub's retry headers without accepting a stale timestamp. */
+function rateLimitRetryAt(response: Response, now: number): number | null {
+  const retryAfter = response.headers.get('retry-after')
+  if (retryAfter !== null) {
+    const seconds = Number(retryAfter)
+    const parsed = Number.isFinite(seconds) && seconds >= 0
+      ? now + seconds * 1_000
+      : Date.parse(retryAfter)
+    if (Number.isFinite(parsed) && parsed > now) return parsed
+  }
+  if (response.headers.get('x-ratelimit-remaining') !== '0' && response.status !== 429) return null
+  const reset = Number(response.headers.get('x-ratelimit-reset')) * 1_000
+  return Number.isFinite(reset) && reset > now ? reset : now + DEFAULT_RATE_LIMIT_COOLDOWN_MS
+}
+
+/** Extract validated release tags from GitHub's public Atom feed. */
+function atomReleaseTags(xml: string, prefix: string): string[] {
+  const tags = new Set<string>()
+  const ids = xml.matchAll(/<id>tag:github\.com,2008:Repository\/\d+\/([^<]+)<\/id>/g)
+  for (const match of ids) {
+    const tag = match[1]
+    if (tag !== undefined && tag.startsWith(prefix) && safeReleaseTag.test(tag)) tags.add(tag)
+  }
+  return [...tags]
+}
+
+/** Build one immutable public release-asset URL from validated path segments. */
+function releaseAssetUrl(repository: string, tag: string, asset: string): string {
+  return `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`
 }
 
 /** Find one exact asset or fail on a malformed release. */
@@ -127,8 +180,33 @@ async function resolveRelease(release: GitHubRelease, publicKeyPem: string): Pro
   return { manifest, manifestBytes, signatureText, archive, tag: release.tag_name }
 }
 
+/** Resolve signed assets directly when anonymous REST discovery is rate-limited. */
+async function resolveReleaseTag(
+  repository: string,
+  tag: string,
+  publicKeyPem: string,
+): Promise<AvailableRuntimeRelease> {
+  const manifestUrl = releaseAssetUrl(repository, tag, 'runtime-manifest.json')
+  const signatureUrl = releaseAssetUrl(repository, tag, 'runtime-manifest.sig')
+  const [manifestBytes, signatureBytes] = await Promise.all([
+    fetchBounded(manifestUrl, 64 * 1024),
+    fetchBounded(signatureUrl, 4 * 1024),
+  ])
+  const signatureText = signatureBytes.toString('utf8')
+  verifyManifestSignature(manifestBytes, signatureText, publicKeyPem)
+  const manifest = parseRuntimeManifest(manifestBytes)
+  const archive: GitHubAsset = {
+    name: manifest.asset,
+    size: manifest.size,
+    browser_download_url: releaseAssetUrl(repository, tag, manifest.asset),
+  }
+  return { manifest, manifestBytes, signatureText, archive, tag }
+}
+
 /** GitHub-backed runtime discovery and archive download. */
 export class GitHubRuntimeProvider {
+  private restBlockedUntil = 0
+
   /**
    * @param repository - public `owner/name` repository.
    * @param tagPrefix - runtime-only release prefix.
@@ -142,6 +220,20 @@ export class GitHubRuntimeProvider {
     if (!/^[0-9A-Za-z_.-]+\/[0-9A-Za-z_.-]+$/.test(repository)) {
       throw new Error(`invalid GitHub repository: ${repository}`)
     }
+    if (!safeReleaseTag.test(tagPrefix)) throw new Error(`invalid GitHub release tag prefix: ${tagPrefix}`)
+  }
+
+  /** Discover signed releases through GitHub's public non-REST feed. */
+  private async latestFromAtom(): Promise<AvailableRuntimeRelease | null> {
+    const url = `https://github.com/${this.repository}/releases.atom`
+    const bytes = await fetchBounded(url, ATOM_RESPONSE_LIMIT, 'application/atom+xml')
+    const tags = atomReleaseTags(bytes.toString('utf8'), this.tagPrefix)
+    let latest: AvailableRuntimeRelease | null = null
+    for (const tag of tags) {
+      const candidate = await resolveReleaseTag(this.repository, tag, this.publicKeyPem)
+      if (latest === null || compareRuntimeVersions(candidate.manifest, latest.manifest) > 0) latest = candidate
+    }
+    return latest
   }
 
   /**
@@ -149,10 +241,28 @@ export class GitHubRuntimeProvider {
    * @returns Latest candidate, or null when no runtime release exists.
    */
   async latest(): Promise<AvailableRuntimeRelease | null> {
+    const now = Date.now()
+    if (now < this.restBlockedUntil) {
+      try {
+        return await this.latestFromAtom()
+      } catch (error) {
+        throw new GitHubRateLimitError(this.restBlockedUntil, { cause: error })
+      }
+    }
     const url = `https://api.github.com/repos/${this.repository}/releases?per_page=30`
     const response = await fetch(url, { headers: githubHeaders() })
-    if (!response.ok) throw new Error(`GitHub releases request failed with ${response.status}`)
-    const releases = releasesSchema.parse(await response.json())
+    if (!response.ok) {
+      const retryAt = rateLimitRetryAt(response, now)
+      await response.body?.cancel()
+      if (retryAt === null) throw new Error(`GitHub releases request failed with ${response.status}`)
+      this.restBlockedUntil = retryAt
+      try {
+        return await this.latestFromAtom()
+      } catch (error) {
+        throw new GitHubRateLimitError(retryAt, { cause: error })
+      }
+    }
+    const releases = releasesSchema.parse(JSON.parse((await readBounded(response, url, API_RESPONSE_LIMIT)).toString('utf8')) as unknown)
       .filter(release => !release.draft && !release.prerelease && release.tag_name.startsWith(this.tagPrefix))
     if (releases.length === 0) return null
 
