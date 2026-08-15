@@ -38,6 +38,14 @@ describe('release families', () => {
     expect(() => { dsh.verifyVersions([members[0]!]) }).not.toThrow()
   })
 
+  it('keeps the independently versioned desktop shell outside the npm family', () => {
+    const directories = releaseFamily('dsh').members(process.cwd()).map(member => member.directory)
+
+    expect(directories).toContain('apps/cli')
+    expect(directories).toContain('apps/web')
+    expect(directories).not.toContain('apps/desktop')
+  })
+
   it('accepts independent vendored versions and rejects an unpublishable one', () => {
     const vendor = releaseFamily('vendor')
     const members = [

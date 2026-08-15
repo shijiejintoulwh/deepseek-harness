@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>更新 DeepSeek Harness</title>
+  <link rel="stylesheet" href="./update.css">
+</head>
+<body>
+  <main>
+    <p class="eyebrow">HARNESS UPDATE</p>
+    <h1 data-update-status>正在准备更新</h1>
+    <p data-update-detail>正在连接 GitHub Releases</p>
+    <progress max="100" indeterminate></progress>
+    <a href="dsh-desktop://cancel">取消</a>
+  </main>
+  <script type="module" src="../lib/update-renderer.js"></script>
+</body>
+</html>

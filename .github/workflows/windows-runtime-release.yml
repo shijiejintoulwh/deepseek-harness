@@ -1,0 +1,104 @@
+name: Windows Harness runtime release
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime-revision:
+        description: Packaging revision for the current Harness version.
+        required: true
+        type: number
+        default: 1
+      min-desktop-version:
+        description: Oldest compatible desktop host.
+        required: true
+        type: string
+        default: 1.0.0
+      publish:
+        description: Create the immutable runtime-v* GitHub Release.
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-runtime-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build signed win32-x64 runtime
+    runs-on: windows-2025
+    environment: runtime-release
+    timeout-minutes: 60
+    steps:
+      - name: Require reviewed master
+        shell: pwsh
+        run: |
+          if ('${{ github.ref }}' -ne 'refs/heads/master') {
+            throw 'Windows runtime releases must be dispatched from master.'
+          }
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install immutable workspace
+        shell: pwsh
+        run: pnpm install --frozen-lockfile
+
+      - name: Materialize signing key
+        shell: pwsh
+        env:
+          RUNTIME_SIGNING_PRIVATE_KEY_PEM: ${{ secrets.RUNTIME_SIGNING_PRIVATE_KEY_PEM }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RUNTIME_SIGNING_PRIVATE_KEY_PEM)) {
+            throw 'RUNTIME_SIGNING_PRIVATE_KEY_PEM is not configured.'
+          }
+          $path = Join-Path $env:RUNNER_TEMP 'runtime-signing-private.pem'
+          [IO.File]::WriteAllText($path, $env:RUNTIME_SIGNING_PRIVATE_KEY_PEM, [Text.UTF8Encoding]::new($false))
+          "RUNTIME_PRIVATE_KEY=$path" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build signed runtime
+        shell: pwsh
+        run: |
+          $node = (Get-Command node -ErrorAction Stop).Source
+          pnpm exec tsx scripts/runtime-release/build-windows-runtime.ts --out dist-desktop/runtime --node-exe $node --private-key $env:RUNTIME_PRIVATE_KEY --runtime-revision '${{ inputs.runtime-revision }}' --min-desktop-version '${{ inputs.min-desktop-version }}'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-harness-runtime
+          path: dist-desktop/runtime/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish runtime-v release
+    if: inputs.publish
+    needs: build
+    runs-on: windows-2025
+    environment: runtime-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows-harness-runtime
+          path: dist-desktop/runtime
+
+      - name: Create immutable GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $manifest = Get-Content -Raw -LiteralPath 'dist-desktop/runtime/runtime-manifest.json' | ConvertFrom-Json
+          $tag = "runtime-v$($manifest.harnessVersion)-r$($manifest.runtimeRevision)"
+          gh release create $tag dist-desktop/runtime/* --target '${{ github.sha }}' --title $tag --notes "Signed Windows Harness runtime from ${{ github.sha }}."

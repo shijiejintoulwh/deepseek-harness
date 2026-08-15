@@ -1,0 +1,110 @@
+name: Windows desktop installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime-tag:
+        description: Signed runtime-v* release bundled for offline first launch.
+        required: true
+        type: string
+      desktop-tag:
+        description: desktop-v* tag created only when publish is enabled.
+        required: true
+        type: string
+        default: desktop-v1.0.2
+      publish:
+        description: Publish a desktop-v* GitHub Release for manual shell upgrades.
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build assisted NSIS installer
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: dev-windesktop
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Install immutable workspace
+        shell: pwsh
+        run: pnpm install --frozen-lockfile
+
+      - name: Download signed seed runtime
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_TAG: ${{ inputs.runtime-tag }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:RUNTIME_TAG)) {
+            throw 'runtime-tag is required for an offline installer.'
+          }
+          New-Item -ItemType Directory -Path 'dist-desktop/runtime' | Out-Null
+          gh release download $env:RUNTIME_TAG --dir 'dist-desktop/runtime' --pattern 'runtime-manifest.*' --pattern 'deepseek-harness-runtime-win32-x64-*.zip'
+          pnpm exec tsx scripts/runtime-release/prepare-desktop-seed.ts --from dist-desktop/runtime
+
+      - name: Build installer
+        shell: pwsh
+        run: pnpm run desktop:dist
+
+      - name: Smoke test packaged desktop and seed runtime
+        shell: pwsh
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP 'desktop-smoke'
+          $env:APPDATA = Join-Path $smoke 'AppData\Roaming'
+          $env:LOCALAPPDATA = Join-Path $smoke 'AppData\Local'
+          $env:DSH_HOME = Join-Path $smoke 'absent-legacy-home'
+          $env:DSH_DESKTOP_DISABLE_UPDATE_CHECK = '1'
+          $env:DSH_DESKTOP_SMOKE_TEST = '1'
+          $env:DSH_DESKTOP_SMOKE_DATA_ROOT = $smoke
+          $executable = 'dist-desktop\win-unpacked\DeepSeek Harness Desktop.exe'
+          $process = Start-Process -FilePath $executable -PassThru -Wait -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) {
+            throw "Packaged desktop smoke test exited with $($process.ExitCode)."
+          }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: deepseek-harness-desktop-installer
+          path: dist-desktop/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish desktop installer
+    if: inputs.publish
+    needs: build
+    runs-on: windows-2025
+    environment: desktop-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: deepseek-harness-desktop-installer
+          path: dist-desktop
+
+      - name: Create manual shell-upgrade release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ inputs.desktop-tag }}'
+          if ($tag -notlike 'desktop-v*') { throw 'desktop-tag must start with desktop-v.' }
+          gh release create $tag dist-desktop/*.exe --target dev-windesktop --title $tag --notes 'Windows desktop shell installer. Harness updates independently in the application.'

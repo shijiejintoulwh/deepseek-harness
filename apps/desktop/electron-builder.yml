@@ -1,0 +1,34 @@
+appId: ai.deepseek.harness.desktop
+productName: DeepSeek Harness Desktop
+asar: true
+directories:
+  output: ../../dist-desktop
+  buildResources: build
+files:
+  - lib/main.js
+  - lib/update-renderer.js
+  - ui/**/*
+  - package.json
+extraResources:
+  - from: build/seed-runtime
+    to: seed-runtime
+  - from: build/icon.ico
+    to: icon.ico
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
+  oneClick: false
+  perMachine: false
+  selectPerMachineByDefault: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  artifactName: DeepSeek-Harness-Desktop-${version}-win-x64.${ext}

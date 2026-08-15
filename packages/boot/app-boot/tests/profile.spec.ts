@@ -239,6 +239,36 @@ describe('healProfilesModuleFallback', () => {
     expect(before).toContain('dep-of-a')
   })
 
+  it('traverses private dependencies from a pnpm-style linked package', () => {
+    const root = tmp()
+    const app = join(root, 'app')
+    const storedBundle = join(root, 'store', 'linked-bundle')
+    const privateDependency = join(storedBundle, 'node_modules', 'private-dependency')
+    mkdirSync(privateDependency, { recursive: true })
+    writeFileSync(join(privateDependency, 'package.json'), JSON.stringify({
+      name: 'private-dependency',
+      version: '0.0.0',
+    }))
+    writeFileSync(join(storedBundle, 'package.json'), JSON.stringify({
+      name: 'linked-bundle',
+      version: '0.0.0',
+      dependencies: { 'private-dependency': '0.0.0' },
+    }))
+    mkdirSync(join(app, 'node_modules'), { recursive: true })
+    symlinkSync(storedBundle, join(app, 'node_modules', 'linked-bundle'), 'junction')
+    const anchor = join(app, 'package.json')
+    writeFileSync(anchor, JSON.stringify({
+      name: 'dsh-app',
+      dependencies: { 'linked-bundle': '0.0.0' },
+    }))
+
+    const home = tmp()
+    healProfilesModuleFallback(anchor, home)
+    const fallback = join(home, 'profiles', 'node_modules')
+    expect(lstatSync(join(fallback, 'private-dependency')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(fallback, 'private-dependency'))).toContain('private-dependency')
+  })
+
   it('throws when a fallback entry is a real directory', () => {
     const anchor = stageInstallation({})
     const home = tmp()
