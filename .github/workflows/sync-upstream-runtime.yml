@@ -1,0 +1,81 @@
+name: Sync upstream and release Windows runtime
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force-release:
+        description: Build a new runtime revision even when upstream master is unchanged.
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-windows-runtime
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge official master without rewriting fork history
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      release-needed: ${{ steps.sync.outputs.release-needed }}
+      source-sha: ${{ steps.sync.outputs.source-sha }}
+      tooling-sha: ${{ steps.sync.outputs.tooling-sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Merge official master into fork branches
+        id: sync
+        env:
+          FORCE_RELEASE: ${{ inputs.force-release || false }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git remote add upstream https://github.com/deepseek-ai/deepseek-harness.git
+          git fetch --no-tags upstream master
+          upstream_sha=$(git rev-parse upstream/master)
+
+          if ! git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            git merge --no-edit --no-ff "$upstream_sha"
+            git push origin HEAD:master
+          fi
+          source_sha=$(git rev-parse HEAD)
+
+          git fetch --no-tags origin dev-windesktop
+          git checkout -B dev-windesktop origin/dev-windesktop
+          if ! git merge-base --is-ancestor "$upstream_sha" HEAD; then
+            git merge --no-edit "$upstream_sha"
+            git push origin HEAD:dev-windesktop
+          fi
+          tooling_sha=$(git rev-parse HEAD)
+
+          release_targets=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].target_commitish')
+          release_needed=false
+          if ! grep -Fqx "$source_sha" <<< "$release_targets"; then release_needed=true; fi
+          if [ "$FORCE_RELEASE" = 'true' ]; then release_needed=true; fi
+          echo "release-needed=$release_needed" >> "$GITHUB_OUTPUT"
+          echo "source-sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "tooling-sha=$tooling_sha" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Build, sign, and publish updated runtime
+    needs: sync
+    if: needs.sync.outputs.release-needed == 'true'
+    uses: ./.github/workflows/windows-runtime-release.yml
+    with:
+      source-ref: ${{ needs.sync.outputs.source-sha }}
+      tooling-ref: ${{ needs.sync.outputs.tooling-sha }}
+      runtime-revision: 0
+      min-desktop-version: 1.0.0
+      publish: true
