@@ -1,54 +1,53 @@
-# DeepSeek Harness
+# DeepSeek Harness Desktop
 
 English | [中文](README.zh.md)
 
-DeepSeek Harness (`dsh`) is an open-source agent harness developed by [DeepSeek AI](https://deepseek.com).
+> Community-maintained Windows desktop shell for [DeepSeek Harness](https://www.deepseek.com/harness/). This project is not an official DeepSeek desktop client.
 
-It uses an architecture where **everything is a plugin**, and is powered by [Cordis](https://github.com/cordiverse/cordis), whose design is described in [_A Programming Paradigm for Spatiotemporal Composability_](https://github.com/cordiverse/paper).
+[Download for Windows](https://github.com/shijiejintoulwh/deepseek-harness/releases) · [Desktop documentation](apps/desktop/README.md) · [Official Harness repository](https://github.com/deepseek-ai/deepseek-harness)
 
-## Developer preview
+## Desktop experience
 
-DeepSeek Harness is currently in _developer preview_ and is iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
+DeepSeek Harness Desktop packages the official open-source Harness Web application in a Windows Electron shell. The assisted installer supports a user-selected installation directory, the native title bar follows the application's light or dark theme, and closing the main window keeps Harness available from the system tray.
+
+The Electron shell remains on the `dev-windesktop` branch while independently versioned Harness runtimes are built from `master`. The desktop application checks for signed runtime releases at startup, verifies their Ed25519 signature and SHA-256 digest, and retains the previous runtime for rollback.
+
+## Download
+
+Open [GitHub Releases](https://github.com/shijiejintoulwh/deepseek-harness/releases) and select the newest `desktop-v*` Windows installer. This personal MVP does not have an Authenticode identity, so Windows may display an unknown-publisher warning.
+
+See the [Desktop reference](apps/desktop/README.md) for storage locations, lifecycle behavior, update security, build commands, and current limitations.
 
 ## Run
 
+Harness can also run without the desktop shell.
+
 ### Run from `npm`
 
-Install `Node.js`, then run:
+Install Node.js, then run:
 
 ```sh
 npx @deepseek-ai/dsh web
 ```
 
-The command starts the Web UI, served at `http://127.0.0.1:3080` by default. See [Web UI guide](docs/user/guide/index.md).
+The command starts the Web UI at `http://127.0.0.1:3080` by default.
 
 ### Run from source
 
-To run from a repository checkout:
+To run Harness directly from this repository checkout:
 
 ```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
 pnpm install
 pnpm run build
 pnpm dsh web
 ```
 
-## Community and support
+## Project links
 
-- Feel free to submit feedback or bug reports through [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions).
-- Add the [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic to your plugin repository for discoverability.
-- Join <a href="https://discord.gg/Ycq5dCaS4">DeepSeek Harness Discord community</a>.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Development
-
-Start with the [development guide](docs/development.md) and [architecture documentation](docs/architecture.md).
-
-For agents, follow [AGENTS.md](AGENTS.md).
+- [DeepSeek Harness website](https://www.deepseek.com/harness/)
+- [Official DeepSeek Harness repository](https://github.com/deepseek-ai/deepseek-harness)
+- [Community desktop repository](https://github.com/shijiejintoulwh/deepseek-harness/tree/dev-windesktop)
+- Community friend: [Linux.do](https://linux.do/)
 
 ## License
 

@@ -65,3 +65,7 @@ pnpm run desktop:dist
 The personal MVP has no Authenticode identity; Windows may therefore show an untrusted-publisher warning even though every Harness runtime is independently authenticated by the embedded Ed25519 key and SHA-256 digest.
 
 Only full self-contained runtime archives are supported; delta updates and automatic Electron-shell updates are deferred.
+
+## Community links
+
+- [Linux.do](https://linux.do/)

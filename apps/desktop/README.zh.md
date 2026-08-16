@@ -65,3 +65,7 @@ pnpm run desktop:dist
 个人 MVP 没有 Authenticode 身份，因此即使每份 Harness 运行时都会由内嵌 Ed25519 公钥与 SHA-256 摘要独立认证，Windows 仍可能显示未知发布者警告。
 
 目前只支持完整的自包含运行时压缩包；增量更新与 Electron 壳自动更新留待后续实现。
+
+## 社区友链
+
+- [Linux.do](https://linux.do/)
