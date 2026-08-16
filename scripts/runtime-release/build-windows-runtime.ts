@@ -2,7 +2,8 @@
  * Build a portable Windows x64 Harness runtime from the reviewed checkout.
  * pnpm deploy materializes the CLI production closure, the selected Node 24
  * executable is copied beside it, and the complete directory is ZIP-compressed
- * before its digest enters a signed manifest.
+ * before its digest enters a manifest. Local callers may sign that manifest in
+ * place; release CI signs it later in a checkout-free protected job.
  */
 
 import { createHash } from 'node:crypto'
@@ -36,7 +37,7 @@ type SmokeChild = ChildProcessByStdio<null, Readable, Readable>
 interface BuildOptions {
   readonly out: string
   readonly nodeExe: string
-  readonly privateKey: string
+  readonly privateKey: string | null
   readonly runtimeRevision: number
   readonly minDesktopVersion: string
   readonly desktopProtocolVersion: number
@@ -207,7 +208,6 @@ function options(): BuildOptions {
     allowPositionals: false,
   })
   const privateKey = values['private-key']
-  if (privateKey === undefined || privateKey === '') throw new Error('--private-key is required')
   const runtimeRevision = Number(values['runtime-revision'])
   const desktopProtocolVersion = Number(values['desktop-protocol-version'])
   if (!Number.isInteger(runtimeRevision) || runtimeRevision < 1) throw new Error('--runtime-revision must be positive')
@@ -217,7 +217,7 @@ function options(): BuildOptions {
   return {
     out: resolve(values.out),
     nodeExe: resolve(values['node-exe']),
-    privateKey: resolve(privateKey),
+    privateKey: privateKey === undefined || privateKey === '' ? null : resolve(privateKey),
     runtimeRevision,
     minDesktopVersion: values['min-desktop-version'],
     desktopProtocolVersion,
@@ -225,7 +225,7 @@ function options(): BuildOptions {
   }
 }
 
-/** Build the complete signed release asset set. */
+/** Build the complete release asset set and optionally sign its manifest. */
 async function main(): Promise<void> {
   if (process.platform !== 'win32' || process.arch !== 'x64') {
     throw new Error('Windows runtime build requires native win32 x64')
@@ -301,12 +301,14 @@ async function main(): Promise<void> {
       publishedAt: new Date().toISOString(),
     })
     const manifestBytes = renderRuntimeManifest(manifest)
-    const privateKeyPem = readTextFileSync(input.privateKey, 'utf8')
     writeFileSync(join(input.out, 'runtime-manifest.json'), manifestBytes, { flag: 'wx', mode: 0o600 })
-    writeFileSync(join(input.out, 'runtime-manifest.sig'), signRuntimeManifest(manifestBytes, privateKeyPem), {
-      flag: 'wx',
-      mode: 0o600,
-    })
+    if (input.privateKey !== null) {
+      const privateKeyPem = readTextFileSync(input.privateKey, 'utf8')
+      writeFileSync(join(input.out, 'runtime-manifest.sig'), signRuntimeManifest(manifestBytes, privateKeyPem), {
+        flag: 'wx',
+        mode: 0o600,
+      })
+    }
     console.log(`runtime archive: ${archive}`)
     console.log(`runtime manifest: ${join(input.out, 'runtime-manifest.json')}`)
   } finally {

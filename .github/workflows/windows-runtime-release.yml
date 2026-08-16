@@ -1,13 +1,48 @@
 name: Windows Harness runtime release
 
 on:
+  workflow_call:
+    inputs:
+      source-ref:
+        description: Exact reviewed master commit produced by the upstream sync.
+        required: true
+        type: string
+      tooling-ref:
+        description: Exact dev-windesktop commit containing the runtime packaging tools.
+        required: true
+        type: string
+      runtime-revision:
+        description: Packaging revision, or zero to select the next release revision.
+        required: false
+        type: number
+        default: 0
+      min-desktop-version:
+        description: Oldest compatible desktop host.
+        required: false
+        type: string
+        default: 1.0.0
+      publish:
+        description: Create the immutable runtime-v* GitHub Release.
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
+      source-ref:
+        description: Branch, tag, or commit containing the Harness source to package.
+        required: true
+        type: string
+        default: master
+      tooling-ref:
+        description: Branch, tag, or commit containing the runtime packaging tools.
+        required: true
+        type: string
+        default: dev-windesktop
       runtime-revision:
-        description: Packaging revision for the current Harness version.
+        description: Packaging revision, or zero to select the next release revision.
         required: true
         type: number
-        default: 1
+        default: 0
       min-desktop-version:
         description: Oldest compatible desktop host.
         required: true
@@ -23,29 +58,62 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-runtime-release-${{ github.ref }}
+  group: windows-runtime-release
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build signed win32-x64 runtime
+    name: Build unsigned win32-x64 runtime
     runs-on: windows-2025
-    environment: runtime-release
     timeout-minutes: 60
+    outputs:
+      runtime-tag: ${{ steps.revision.outputs.runtime-tag }}
+      source-sha: ${{ steps.revision.outputs.source-sha }}
     steps:
-      - name: Require reviewed master
-        shell: pwsh
-        run: |
-          if ('${{ github.ref }}' -ne 'refs/heads/master') {
-            throw 'Windows runtime releases must be dispatched from master.'
-          }
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source-ref }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: source
 
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
+          ref: ${{ inputs.tooling-ref }}
+          fetch-depth: 1
           persist-credentials: false
+          path: tooling
+
+      - name: Select immutable runtime revision
+        id: revision
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_REVISION: ${{ inputs.runtime-revision }}
+        working-directory: source
+        run: |
+          $sourceSha = (git rev-parse HEAD).Trim()
+          if ($sourceSha -notmatch '^[0-9a-f]{40}$') { throw "Invalid source commit: $sourceSha" }
+          $version = (Get-Content -Raw -LiteralPath 'package.json' | ConvertFrom-Json).version
+          $requested = [int64]$env:REQUESTED_REVISION
+          if ($requested -gt 0) {
+            $revision = $requested
+          } else {
+            $pattern = '^runtime-v' + [regex]::Escape($version) + '-r(?<revision>[1-9][0-9]*)$'
+            $tags = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+            $revisions = @($tags | ForEach-Object {
+              if ($_ -match $pattern) { [int64]$Matches.revision }
+            })
+            $revision = if ($revisions.Count -eq 0) { 1 } else { ($revisions | Measure-Object -Maximum).Maximum + 1 }
+          }
+          $tag = "runtime-v$version-r$revision"
+          "runtime-revision=$revision" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "runtime-tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "source-sha=$sourceSha" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: source/package.json
 
       - uses: actions/setup-node@v6
         with:
@@ -54,24 +122,69 @@ jobs:
       - name: Install immutable workspace
         shell: pwsh
         run: pnpm install --frozen-lockfile
+        working-directory: source
 
-      - name: Materialize signing key
-        shell: pwsh
-        env:
-          RUNTIME_SIGNING_PRIVATE_KEY_PEM: ${{ secrets.RUNTIME_SIGNING_PRIVATE_KEY_PEM }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:RUNTIME_SIGNING_PRIVATE_KEY_PEM)) {
-            throw 'RUNTIME_SIGNING_PRIVATE_KEY_PEM is not configured.'
-          }
-          $path = Join-Path $env:RUNNER_TEMP 'runtime-signing-private.pem'
-          [IO.File]::WriteAllText($path, $env:RUNTIME_SIGNING_PRIVATE_KEY_PEM, [Text.UTF8Encoding]::new($false))
-          "RUNTIME_PRIVATE_KEY=$path" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Build signed runtime
+      - name: Build and smoke-test runtime
         shell: pwsh
         run: |
           $node = (Get-Command node -ErrorAction Stop).Source
-          pnpm exec tsx scripts/runtime-release/build-windows-runtime.ts --out dist-desktop/runtime --node-exe $node --private-key $env:RUNTIME_PRIVATE_KEY --runtime-revision '${{ inputs.runtime-revision }}' --min-desktop-version '${{ inputs.min-desktop-version }}'
+          pnpm exec tsx ../tooling/scripts/runtime-release/build-windows-runtime.ts --out ../dist-desktop/runtime --node-exe $node --runtime-revision '${{ steps.revision.outputs.runtime-revision }}' --min-desktop-version '${{ inputs.min-desktop-version }}'
+        working-directory: source
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-harness-runtime-unsigned
+          path: dist-desktop/runtime/*
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    name: Sign verified runtime manifest
+    needs: build
+    runs-on: ubuntu-latest
+    environment: runtime-release
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: windows-harness-runtime-unsigned
+          path: dist-desktop/runtime
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Verify release assets and sign exact manifest bytes
+        env:
+          RUNTIME_SIGNING_PRIVATE_KEY_PEM: ${{ secrets.RUNTIME_SIGNING_PRIVATE_KEY_PEM }}
+          EXPECTED_MIN_DESKTOP_VERSION: ${{ inputs.min-desktop-version }}
+          EXPECTED_RUNTIME_TAG: ${{ needs.build.outputs.runtime-tag }}
+          EXPECTED_SOURCE_SHA: ${{ needs.build.outputs.source-sha }}
+        run: >-
+          node --input-type=module -e "import { createHash, createPrivateKey, sign } from 'node:crypto';
+          import { basename, join } from 'node:path'; import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+          const root = 'dist-desktop/runtime'; const manifestPath = join(root, 'runtime-manifest.json');
+          const bytes = readFileSync(manifestPath); const manifest = JSON.parse(bytes.toString('utf8'));
+          const expectedKeys = ['arch', 'asset', 'commitSha', 'desktopProtocolVersion', 'harnessVersion', 'minDesktopVersion', 'nodeVersion', 'platform', 'publishedAt', 'runtimeRevision', 'schemaVersion', 'sha256', 'size'].sort();
+          if (JSON.stringify(Object.keys(manifest).sort()) !== JSON.stringify(expectedKeys)) throw new Error('runtime manifest fields are invalid');
+          if (manifest.schemaVersion !== 1 || manifest.platform !== 'win32' || manifest.arch !== 'x64') throw new Error('runtime manifest target is invalid');
+          if (!Number.isInteger(manifest.runtimeRevision) || manifest.runtimeRevision < 1) throw new Error('runtime revision is invalid');
+          if (!Number.isInteger(manifest.size) || manifest.size < 1 || !/^[0-9a-f]{64}$/.test(manifest.sha256)) throw new Error('runtime archive metadata is invalid');
+          if (manifest.commitSha !== process.env.EXPECTED_SOURCE_SHA) throw new Error('runtime manifest source commit is invalid');
+          if (manifest.minDesktopVersion !== process.env.EXPECTED_MIN_DESKTOP_VERSION || manifest.desktopProtocolVersion !== 1) throw new Error('runtime compatibility is invalid');
+          if (!/^v24\./.test(manifest.nodeVersion) || typeof manifest.publishedAt !== 'string' || Number.isNaN(Date.parse(manifest.publishedAt))) throw new Error('runtime provenance is invalid');
+          const expectedTag = 'runtime-v' + manifest.harnessVersion + '-r' + manifest.runtimeRevision;
+          if (expectedTag !== process.env.EXPECTED_RUNTIME_TAG) throw new Error('runtime release tag is invalid');
+          const expectedAsset = 'deepseek-harness-runtime-win32-x64-' + manifest.harnessVersion + '-r' + manifest.runtimeRevision + '.zip';
+          if (manifest.asset !== expectedAsset || basename(manifest.asset) !== manifest.asset) throw new Error('runtime manifest asset is invalid');
+          if (JSON.stringify(readdirSync(root).sort()) !== JSON.stringify([expectedAsset, 'runtime-manifest.json'].sort())) throw new Error('unsigned runtime artifact contains unexpected files');
+          const archive = join(root, manifest.asset); const size = statSync(archive).size;
+          const sha256 = createHash('sha256').update(readFileSync(archive)).digest('hex');
+          if (size !== manifest.size || sha256 !== manifest.sha256) throw new Error('runtime archive does not match its manifest');
+          const pem = process.env.RUNTIME_SIGNING_PRIVATE_KEY_PEM;
+          if (!pem) throw new Error('RUNTIME_SIGNING_PRIVATE_KEY_PEM is not configured');
+          const key = createPrivateKey(pem); if (key.asymmetricKeyType !== 'ed25519') throw new Error('runtime signing key must be Ed25519');
+          writeFileSync(join(root, 'runtime-manifest.sig'), sign(null, bytes, key).toString('base64') + '\n', { flag: 'wx', mode: 0o600 });"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -83,9 +196,8 @@ jobs:
   publish:
     name: Publish runtime-v release
     if: inputs.publish
-    needs: build
-    runs-on: windows-2025
-    environment: runtime-release
+    needs: [build, sign]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -95,10 +207,8 @@ jobs:
           path: dist-desktop/runtime
 
       - name: Create immutable GitHub Release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          $manifest = Get-Content -Raw -LiteralPath 'dist-desktop/runtime/runtime-manifest.json' | ConvertFrom-Json
-          $tag = "runtime-v$($manifest.harnessVersion)-r$($manifest.runtimeRevision)"
-          gh release create $tag dist-desktop/runtime/* --target '${{ github.sha }}' --title $tag --notes "Signed Windows Harness runtime from ${{ github.sha }}."
+          RUNTIME_TAG: ${{ needs.build.outputs.runtime-tag }}
+          SOURCE_REF: ${{ needs.build.outputs.source-sha }}
+        run: gh release create "$RUNTIME_TAG" dist-desktop/runtime/* --target "$SOURCE_REF" --title "$RUNTIME_TAG" --notes "Signed Windows Harness runtime from $SOURCE_REF."

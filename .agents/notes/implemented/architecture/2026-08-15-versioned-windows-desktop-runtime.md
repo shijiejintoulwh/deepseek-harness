@@ -6,11 +6,11 @@ English | [中文](2026-08-15-versioned-windows-desktop-runtime.zh.md)
 
 ## Problem
 
-The Windows product needs an installable shell whose installation directory is user-selectable, while the Harness program must continue following reviewed `master` changes without requiring a new Electron installer for every Harness release.
+The Windows product needs an installable shell whose installation directory is user-selectable, while the Harness program must continue following official `master` changes without requiring a new Electron installer for every Harness release.
 
 Updating files in place would leave no trustworthy last-known-good version, and downloading npm packages at application startup would make the installed product depend on mutable registry resolution, package scripts, and the user's Node installation.
 
-The fork also needs a clear ownership boundary: desktop-only code remains on `dev-windesktop`, while the runtime is produced from reviewed `master` commits.
+The fork also needs a clear ownership boundary: desktop-only code remains on `dev-windesktop`, while the runtime is produced from fork `master` after it incorporates official `master`.
 
 ## Decision
 
@@ -18,7 +18,13 @@ The fork also needs a clear ownership boundary: desktop-only code remains on `de
 
 The shell is released manually from `dev-windesktop` as `desktop-v*`; ordinary shell updates are not automatic.
 
-The [runtime workflow](../../../../.github/workflows/windows-runtime-release.yml) can run only from `master` and deploys the production closure of `@deepseek-ai/dsh` into a symlink-free hoisted tree, copies an official Node 24 executable and notices, starts the staged `dsh web` to prove the real Web shell, then archives the exact tree.
+`desktop-landing` is a dependency-free static page for the community Windows release. Its first screen, project notice, and footer identify the application as community-maintained and not an official DeepSeek desktop client. Separate links name the official Harness website, the upstream repository, and the community desktop branch; the Windows button points to one reviewed versioned installer rather than resolving a mutable download in the browser.
+
+The page ships Chinese and English copy in the same static artifact. Its client-side language switch updates visible text, page metadata, accessibility labels, and the language-specific desktop README link, then remembers the selection locally without adding a network dependency.
+
+The [upstream sync workflow](../../../../.github/workflows/sync-upstream-runtime.yml) runs every six hours from the fork's default `master` branch. It merge-syncs official `master` into fork `master` and `dev-windesktop` without rewriting either branch; a conflict stops the run. An official advance triggers a runtime release from the exact post-merge commits, while a manual dispatch may force another packaging revision without an upstream change. The workflow executes packaging tools from `dev-windesktop` against a separate `master` checkout, so the production dependency closure and signed source commit come only from `master`. Each run compares release target commits, so a later job failure after branch synchronization leaves the missing `master` release eligible for retry.
+
+The [runtime workflow](../../../../.github/workflows/windows-runtime-release.yml) deploys the production closure of `@deepseek-ai/dsh` into a symlink-free hoisted tree, copies an official Node 24 executable and notices, starts the staged `dsh web` to prove the real Web shell, then archives the exact tree. This build job receives no signing secret. A protected checkout-free job validates the manifest field set, source commit, target, revision, compatibility, complete file set, archive size, and SHA-256, signs those exact manifest bytes, and publishes the next unused revision only after every prior job succeeds.
 
 Each runtime release is an immutable `runtime-v<harnessVersion>-r<revision>` GitHub Release with an archive, exact JSON manifest, and detached Ed25519 signature.
 
@@ -40,19 +46,25 @@ Runtime state retains `active`, `previous`, and `pending` identifiers plus the p
 
 Runtime discovery prefers GitHub's anonymous Releases REST endpoint. A REST rate-limit response records its retry time and switches the provider to the public Releases Atom feed for the cooldown; feed tags derive direct manifest, signature, and archive URLs, while the existing Ed25519 signature and strict manifest remain the authority for every candidate. If the fallback also fails, a manual check reports an estimated retry interval and automatic discovery remains silent.
 
-An update is installed beside existing versions and staged for a user-confirmed restart; a candidate becomes active only after its Web page loads and remains live for 30 seconds, a failed launch leaves the active version unchanged, two failures reject the pending candidate, and the user can explicitly swap active and previous versions.
+An update is installed beside existing versions after download confirmation and staged for a user-confirmed restart; a candidate becomes active only after its Web page loads and remains live for 30 seconds, a failed launch leaves the active version unchanged, two failures reject the pending candidate, and the user can explicitly swap active and previous versions. Upstream synchronization and publication are unattended, but a background client check cannot consume bandwidth or interrupt active work without consent.
 
 The host launches only the bundled runtime Node, accepts only a declared `http://127.0.0.1` URL with the Web shell marker, contains renderer navigation to that origin, and waits for the exact child process tree and log stream to settle before exit or relaunch.
 
 ## Verification
 
-Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, direct signed-asset verification, update diagnostics, close interception, explicit-exit pass-through, and window restoration. The packaged desktop smoke closes the real BrowserWindow and fails unless the real Tray retains it before process and log quiescence.
+Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, direct signed-asset verification, update diagnostics, close interception, explicit-exit pass-through, and window restoration. Workflow tests pin the six-hour schedule, merge-only branch updates, exact `master` source commit, automatic revision selection, secret-free build, protected checkout-free signing, and publication dependency. The packaged desktop smoke closes the real BrowserWindow and fails unless the real Tray retains it before process and log quiescence.
 
 ## Alternatives considered
 
 **Update Electron and Harness as one product.** Rejected because every reviewed Harness change would require a much larger installer release and would couple the stable native shell to the faster runtime cadence.
 
 **Install the latest npm packages in place.** Rejected because resolution is mutable, may execute package lifecycle scripts, depends on external Node and pnpm state, and offers no authenticated complete artifact to retain for rollback.
+
+**Download an upstream npm package or release directly into the desktop.** Rejected because upstream does not publish this signed, self-contained Windows runtime format, and a client-side package build would lose the isolated verification and rollback artifact.
+
+**Force-reset fork branches to official `master`.** Rejected because it would delete fork-owned workflow and desktop history. Merge-only synchronization preserves that history and makes conflicts visible instead of silently discarding either side.
+
+**Give the signing secret to the repository build checkout.** Rejected because automatically synchronized source and its dependency scripts must not receive the long-lived release key. The checkout-free signer accepts only an artifact and performs its own manifest-to-archive verification.
 
 **Replace the current runtime directory.** Rejected because interruption or launch failure can destroy the only working version; immutable version directories make activation an atomic state change.
 
@@ -66,13 +78,19 @@ Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, dir
 
 **Quit when the main window closes.** Rejected because desktop users commonly expect a long-running agent application to remain available in the notification area. Explicit exit remains visible in both the application and tray menus and retains the existing quiescent shutdown path.
 
+**Present the community installer as an official product page.** Rejected because matching the official visual language must not imply official distribution, maintenance, or endorsement. The page uses an independent desktop-window motif and repeats the ownership statement where visitors evaluate the download.
+
+**Resolve the latest installer through the GitHub API in the browser.** Rejected because an anonymous client-side request can be rate-limited and would make the primary download depend on JavaScript and remote response fields. Each shell release updates the explicit version, asset URL, and checksum link together.
+
 ## Consequences
 
-Harness releases can advance independently of the shell, work from an offline seed on first launch, and retain one last-known-good runtime for automatic or manual rollback.
+Official Harness advances can produce a verified fork release without manual synchronization or packaging, independently of the shell. First launch still works from an offline seed, and the host retains one last-known-good runtime for automatic or manual rollback.
+
+The scheduled workflow must exist on the fork's default branch, GitHub Actions needs write permission for branch and release updates, and the `runtime-release` environment must expose the signing secret without required reviewers for unattended operation. Merge, build, smoke, signing, or publication failure prevents a new runtime release; branch synchronization may already have completed before a later release job fails.
 
 The Windows title bar, application menu, dialogs, and Web page follow one live theme without giving the page privileged Electron APIs. Runtime releases consumed by this shell preserve the two theme body attributes; older runtimes without the preference attribute still synchronize their resolved palette but cannot distinguish `system` from an explicit selection.
 
-The signing private key becomes release infrastructure: it must remain outside the repository, be stored as `RUNTIME_SIGNING_PRIVATE_KEY_PEM` in the protected `runtime-release` environment, and be rotated only together with a shell release embedding the new public key.
+The signing private key becomes release infrastructure: it must remain outside the repository, be stored as `RUNTIME_SIGNING_PRIVATE_KEY_PEM` in the protected `runtime-release` environment, and be rotated only together with a shell release embedding the new public key. Full automation trusts official upstream changes after the frozen-dependency build and smoke gates; it does not grant those checked-out changes access to the signing key.
 
 Full archives cost more download and disk than deltas, and the first seed install must unpack a production dependency tree; the hoisted symlink-free layout limits that cost without changing the runtime closure.
 
@@ -81,3 +99,5 @@ The personal MVP has no Authenticode identity, so Windows may warn about the ins
 Hiding the main window keeps the runtime process and its memory resident until the user selects an explicit exit. A one-shot tray notification makes that persistence visible without interrupting every close.
 
 GitHub availability can still make both discovery paths fail, but anonymous REST exhaustion alone does not block discovery, first launch, or the currently installed runtime. The Atom fallback exposes less release metadata than REST, so signed manifest fields, not feed prose, remain the only input to compatibility and installation decisions.
+
+The static community page can be opened without a build step and deployed on any file host. Visitors can switch languages without leaving the page, and their selection persists across reloads when browser storage is available. A shell release must update its visible version and versioned asset links; this deliberate maintenance point keeps the download destination reviewable and functional when anonymous GitHub API capacity is exhausted.

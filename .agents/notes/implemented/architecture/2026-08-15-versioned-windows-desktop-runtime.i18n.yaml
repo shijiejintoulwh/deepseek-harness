@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-15-versioned-windows-desktop-runtime.md
-2026-08-15-versioned-windows-desktop-runtime.md: 59458eef2b7461a88d24ab39e76c9505258c76f9
-2026-08-15-versioned-windows-desktop-runtime.zh.md: c7874404a52babf62fb2fd925ccd27de09d36e30
+2026-08-15-versioned-windows-desktop-runtime.md: dd4e54478cd501896499967ef6d932d3d9d46598
+2026-08-15-versioned-windows-desktop-runtime.zh.md: 2e41848b5c811567d489cc332fbccf46e0c6bc03

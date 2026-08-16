@@ -8,9 +8,13 @@
 
 ## 发布归属
 
-桌面端源码与安装器版本位于 `dev-windesktop`，使用 `desktop-v*` 标签；经过审核的 Harness 运行时从 `master` 构建，在 `shijiejintoulwh/deepseek-harness` 中使用不可变的 `runtime-v<harnessVersion>-r<revision>` 标签。
+桌面端源码与安装器版本位于 `dev-windesktop`，使用 `desktop-v*` 标签；经过验证的 Harness 运行时从 `master` 构建，在 `shijiejintoulwh/deepseek-harness` 中使用不可变的 `runtime-v<harnessVersion>-r<revision>` 标签。
 
 桌面包保持私有，并有意排除在 dsh 的 npm 发布族之外。
+
+[上游同步 workflow](../../.github/workflows/sync-upstream-runtime.yml) 每六小时从 fork 的默认 `master` 分支运行一次。它以合并方式把 `deepseek-ai/deepseek-harness` 同步到 fork 的 `master` 与 `dev-windesktop`，且不重写任一分支；官方 `master` 前进时，它会用合并后的精确提交调用运行时 workflow，并自动发布下一个打包修订。打包工具来自 `dev-windesktop`，生产依赖闭包与签名清单中的源提交则只来自 `master`。发生冲突或任何构建、冒烟测试、签名、发布失败时，本次 release 会停止；下次运行会识别已经同步但没有对应 release 目标的 `master` 提交，并重试未完成的发布。
+
+全自动运行要求两个 workflow 文件均位于默认分支、GitHub Actions 的 workflow 权限设为可读写，并在 `runtime-release` environment 中配置 `RUNTIME_SIGNING_PRIVATE_KEY_PEM`。如果为该 environment 设置必需审核人，签名会有意恢复为人工批准步骤。
 
 运行时 workflow 产出一个自包含的 Windows x64 ZIP、`runtime-manifest.json` 与 Ed25519 分离签名；清单绑定 Harness 版本、打包修订、源码提交、Node 版本、压缩包大小、SHA-256 摘要、最低桌面端版本与桌面协议版本。
 
@@ -34,6 +38,8 @@ Electron 用户数据（包括桌面版专用的 `DSH_HOME`）保存在 `%APPDAT
 
 宿主在启动时检查最新 `runtime-v*` release，下载前征求确认，解析元数据前验证 Ed25519 签名，执行兼容性检查，校验大小与 SHA-256，拒绝不安全的 ZIP 路径和链接，并先安装到全新版本目录再标记为重启候选。发现版本时优先使用匿名 GitHub REST feed；GitHub 报告限流后，宿主会遵守其重置时间，转用公开 Releases Atom feed 和签名资源的直接 URL，不会重复请求受限的 REST 接口。两条发现路径都不可用时，手动检查会显示预计重试间隔，自动检查则保持静默。
 
+上游同步与 release 发布无需人工参与；个人电脑上的安装继续保留既有的下载与重启确认，防止后台检查在未经同意时占用带宽或打断正在进行的工作。
+
 候选版本只有在页面成功加载并保持存活 30 秒后才会成为当前版本；候选启动失败时保留原运行时，两次失败后拒绝该候选，菜单也可手动交换当前版本与上一个版本以完成回滚。
 
 ## 本地构建
@@ -52,7 +58,7 @@ pnpm exec tsx scripts/runtime-release/prepare-desktop-seed.ts --from dist-deskto
 pnpm run desktop:dist
 ```
 
-[`windows-runtime-release.yml`](../../.github/workflows/windows-runtime-release.yml) 与 [`windows-desktop-release.yml`](../../.github/workflows/windows-desktop-release.yml) 是权威发布路径。
+[`sync-upstream-runtime.yml`](../../.github/workflows/sync-upstream-runtime.yml)、[`windows-runtime-release.yml`](../../.github/workflows/windows-runtime-release.yml) 与 [`windows-desktop-release.yml`](../../.github/workflows/windows-desktop-release.yml) 是权威同步与发布路径。自动构建 job 不会获得签名机密；受保护且不检出仓库的 job 会先验证严格清单字段、源提交、目标、修订、兼容性、完整文件集合、压缩包大小与 SHA-256，再对该清单的准确字节签名。
 
 ## 当前限制
 

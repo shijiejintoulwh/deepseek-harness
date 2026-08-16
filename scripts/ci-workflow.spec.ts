@@ -1,5 +1,8 @@
-import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { createHash, generateKeyPairSync, verify } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 
@@ -368,6 +371,220 @@ describe('Python release workflows', () => {
 
     expect(macosCheck).toContain('scripts/check-macos-deployment-target.py')
     expect(macosCheck).toContain('"$EXE" "$EXE-spawn-helper"')
+  })
+})
+
+describe('Windows runtime automation', () => {
+  it('merge-syncs official master without rewriting either fork branch', () => {
+    const workflow = loadWorkflow('.github/workflows/sync-upstream-runtime.yml')
+    const schedule = workflow.on
+    const sync = workflowJob(workflow, 'sync')
+    const release = workflowJob(workflow, 'release')
+    if (!isRecord(schedule)
+      || !Array.isArray(schedule.schedule)
+      || !Array.isArray(sync.steps)
+      || !isRecord(workflow.permissions)
+      || !isRecord(workflow.concurrency)) {
+      throw new TypeError('Windows runtime sync must define its schedule, jobs, permissions, and concurrency')
+    }
+
+    expect(schedule.schedule).toEqual([{ cron: '17 */6 * * *' }])
+    expect(workflow.permissions.contents).toBe('write')
+    expect(workflow.concurrency).toEqual({
+      group: 'sync-upstream-windows-runtime',
+      'cancel-in-progress': false,
+    })
+
+    const syncSteps = (sync.steps as unknown[]).filter(isRecord)
+    const checkout = syncSteps.find(step => step.uses === 'actions/checkout@v6')
+    const merge = syncSteps.find(step => step.name === 'Merge official master into fork branches')
+    expect(checkout).toMatchObject({ with: { ref: 'master', 'fetch-depth': 0 } })
+    if (!isRecord(merge) || typeof merge.run !== 'string') {
+      throw new TypeError('Windows runtime sync must define its merge step')
+    }
+    expect(merge.run).toContain('https://github.com/deepseek-ai/deepseek-harness.git')
+    expect(merge.run.match(/git merge-base --is-ancestor/g)).toHaveLength(2)
+    expect(merge.run).toContain('git merge --no-edit --no-ff "$upstream_sha"')
+    expect(merge.run).toContain('git push origin HEAD:master')
+    expect(merge.run).toContain('source_sha=$(git rev-parse HEAD)')
+    expect(merge.run.indexOf('source_sha=$(git rev-parse HEAD)'))
+      .toBeLessThan(merge.run.indexOf('git checkout -B dev-windesktop'))
+    expect(merge.run).toContain('git push origin HEAD:dev-windesktop')
+    expect(merge.run).toContain('tooling_sha=$(git rev-parse HEAD)')
+    expect(merge.run).toContain("--jq '.[].target_commitish'")
+    expect(merge.run).toContain('grep -Fqx "$source_sha"')
+    expect(merge.run).not.toContain('--force')
+
+    expect(release).toMatchObject({
+      needs: 'sync',
+      if: "needs.sync.outputs.release-needed == 'true'",
+      uses: './.github/workflows/windows-runtime-release.yml',
+      with: {
+        'source-ref': '${{ needs.sync.outputs.source-sha }}',
+        'tooling-ref': '${{ needs.sync.outputs.tooling-sha }}',
+        'runtime-revision': 0,
+        'min-desktop-version': '1.0.0',
+        publish: true,
+      },
+    })
+  })
+
+  it('builds without release secrets and signs only in the protected checkout-free job', () => {
+    const workflow = loadWorkflow('.github/workflows/windows-runtime-release.yml')
+    const call = workflowEvent(workflow, 'workflow_call')
+    const dispatch = workflowEvent(workflow, 'workflow_dispatch')
+    const build = workflowJob(workflow, 'build')
+    const sign = workflowJob(workflow, 'sign')
+    const publish = workflowJob(workflow, 'publish')
+    if (!isRecord(call.inputs)
+      || !isRecord(dispatch.inputs)
+      || !Array.isArray(build.steps)
+      || !Array.isArray(sign.steps)
+      || !Array.isArray(publish.steps)
+      || !isRecord(workflow.concurrency)) {
+      throw new TypeError('Windows runtime release must define its inputs, jobs, and concurrency')
+    }
+
+    expect(call.inputs).toMatchObject({
+      'source-ref': { required: true, type: 'string' },
+      'tooling-ref': { required: true, type: 'string' },
+      'runtime-revision': { type: 'number', default: 0 },
+      publish: { type: 'boolean', default: true },
+    })
+    expect(dispatch.inputs).toMatchObject({
+      'source-ref': { type: 'string', default: 'master' },
+      'tooling-ref': { type: 'string', default: 'dev-windesktop' },
+      'runtime-revision': { type: 'number', default: 0 },
+      publish: { type: 'boolean', default: false },
+    })
+    expect(workflow.concurrency).toEqual({
+      group: 'windows-runtime-release',
+      'cancel-in-progress': false,
+    })
+
+    const buildText = JSON.stringify(build.steps)
+    const buildSteps = (build.steps as unknown[]).filter(isRecord)
+    const checkouts = buildSteps.filter(step => step.uses === 'actions/checkout@v6')
+    const sourceCheckout = checkouts.find(step => isRecord(step.with) && step.with.path === 'source')
+    const toolingCheckout = checkouts.find(step => isRecord(step.with) && step.with.path === 'tooling')
+    expect(sourceCheckout).toMatchObject({
+      with: {
+        ref: '${{ inputs.source-ref }}',
+        'persist-credentials': false,
+        path: 'source',
+      },
+    })
+    expect(toolingCheckout).toMatchObject({
+      with: {
+        ref: '${{ inputs.tooling-ref }}',
+        'persist-credentials': false,
+        path: 'tooling',
+      },
+    })
+    expect(buildText).toContain('gh api --paginate')
+    expect(buildText.indexOf('git rev-parse HEAD')).toBeLessThan(buildText.indexOf('pnpm/action-setup@v4'))
+    expect(buildText).toContain('Build and smoke-test runtime')
+    expect(buildText).toContain('../tooling/scripts/runtime-release/build-windows-runtime.ts')
+    expect(buildText).toContain('working-directory":"source')
+    expect(buildText).not.toContain('RUNTIME_SIGNING_PRIVATE_KEY_PEM')
+    expect(buildText).not.toContain('--private-key')
+
+    expect(sign).toMatchObject({
+      needs: 'build',
+      'runs-on': 'ubuntu-latest',
+      environment: 'runtime-release',
+    })
+    const signText = JSON.stringify(sign.steps)
+    expect(signText).not.toContain('actions/checkout')
+    expect(signText).toContain('RUNTIME_SIGNING_PRIVATE_KEY_PEM')
+    expect(signText).toContain('EXPECTED_SOURCE_SHA')
+    expect(signText).toContain('unsigned runtime artifact contains unexpected files')
+    expect(signText).toContain("key.asymmetricKeyType !== 'ed25519'")
+    expect(signText).toContain('size !== manifest.size || sha256 !== manifest.sha256')
+
+    expect(publish).toMatchObject({
+      if: 'inputs.publish',
+      needs: ['build', 'sign'],
+      permissions: { contents: 'write' },
+    })
+    expect(JSON.stringify(publish.steps)).toContain('gh release create')
+  })
+
+  it('executes the embedded signer against only the expected release set', () => {
+    const workflow = loadWorkflow('.github/workflows/windows-runtime-release.yml')
+    const sign = workflowJob(workflow, 'sign')
+    if (!Array.isArray(sign.steps)) throw new TypeError('Windows runtime signer must define steps')
+    const signStep = (sign.steps as unknown[])
+      .filter(isRecord)
+      .find(step => step.name === 'Verify release assets and sign exact manifest bytes')
+    if (!isRecord(signStep) || typeof signStep.run !== 'string') {
+      throw new TypeError('Windows runtime signer must define its embedded command')
+    }
+    const command = signStep.run.trim()
+    const prefix = 'node --input-type=module -e "'
+    if (!command.startsWith(prefix) || !command.endsWith('"')) {
+      throw new TypeError('Windows runtime signer must keep one extractable Node command')
+    }
+    const signer = command.slice(prefix.length, -1)
+
+    const temporary = mkdtempSync(join(tmpdir(), 'dsh-runtime-signer-test-'))
+    const runtime = join(temporary, 'dist-desktop', 'runtime')
+    mkdirSync(runtime, { recursive: true })
+    const harnessVersion = '0.1.0-test.1'
+    const runtimeRevision = 7
+    const asset = `deepseek-harness-runtime-win32-x64-${harnessVersion}-r${runtimeRevision}.zip`
+    const archive = Buffer.from('verified runtime archive')
+    const sourceSha = '1'.repeat(40)
+    const manifest = {
+      schemaVersion: 1,
+      harnessVersion,
+      runtimeRevision,
+      platform: 'win32',
+      arch: 'x64',
+      asset,
+      size: archive.length,
+      sha256: createHash('sha256').update(archive).digest('hex'),
+      commitSha: sourceSha,
+      nodeVersion: 'v24.19.0',
+      minDesktopVersion: '1.0.0',
+      desktopProtocolVersion: 1,
+      publishedAt: '2026-08-16T00:00:00.000Z',
+    }
+    const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`)
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519')
+    const signingEnvironment = {
+      ...process.env,
+      RUNTIME_SIGNING_PRIVATE_KEY_PEM: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
+      EXPECTED_MIN_DESKTOP_VERSION: '1.0.0',
+      EXPECTED_RUNTIME_TAG: `runtime-v${harnessVersion}-r${runtimeRevision}`,
+      EXPECTED_SOURCE_SHA: sourceSha,
+    }
+
+    try {
+      writeFileSync(join(runtime, asset), archive)
+      writeFileSync(join(runtime, 'runtime-manifest.json'), manifestBytes)
+      const signed = spawnSync(process.execPath, ['--input-type=module', '-e', signer], {
+        cwd: temporary,
+        encoding: 'utf8',
+        env: signingEnvironment,
+      })
+      expect(signed.stderr).toBe('')
+      expect(signed.status).toBe(0)
+      const signature = Buffer.from(readFileSync(join(runtime, 'runtime-manifest.sig'), 'utf8').trim(), 'base64')
+      expect(verify(null, manifestBytes, publicKey, signature)).toBe(true)
+
+      rmSync(join(runtime, 'runtime-manifest.sig'))
+      writeFileSync(join(runtime, 'unexpected.txt'), 'must not publish')
+      const rejected = spawnSync(process.execPath, ['--input-type=module', '-e', signer], {
+        cwd: temporary,
+        encoding: 'utf8',
+        env: signingEnvironment,
+      })
+      expect(rejected.status).not.toBe(0)
+      expect(rejected.stderr).toContain('unsigned runtime artifact contains unexpected files')
+    } finally {
+      rmSync(temporary, { recursive: true, force: true })
+    }
   })
 })
 
