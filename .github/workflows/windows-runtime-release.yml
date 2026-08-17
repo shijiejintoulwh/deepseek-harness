@@ -133,6 +133,9 @@ jobs:
           # invoke through a package script so the build runs against the source
           # checkout (the reviewed commit) rather than the tooling tree.
           Copy-Item -Recurse -Force ../tooling/scripts/runtime-release scripts/runtime-release
+          # The manifest spec imports apps/desktop (dev-windesktop only) for tooling CI
+          # coverage; it is not a build input, so the source type check never sees it.
+          Get-ChildItem -Path scripts/runtime-release -Filter *.spec.ts | Remove-Item -Force
           $pj = Get-Content -Raw package.json | ConvertFrom-Json
           $pj.scripts | Add-Member -NotePropertyName 'runtime:windows:build' -NotePropertyValue 'tsx scripts/runtime-release/build-windows-runtime.ts' -Force
           ($pj | ConvertTo-Json -Depth 10) | Set-Content -Encoding utf8 package.json
