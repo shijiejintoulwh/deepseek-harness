@@ -128,7 +128,15 @@ jobs:
         shell: pwsh
         run: |
           $node = (Get-Command node -ErrorAction Stop).Source
-          pnpm exec tsx ../tooling/scripts/runtime-release/build-windows-runtime.ts --out ../dist-desktop/runtime --node-exe $node --runtime-revision '${{ steps.revision.outputs.runtime-revision }}' --min-desktop-version '${{ inputs.min-desktop-version }}'
+          # The packaging script requires npm_execpath (set only by `pnpm run`),
+          # which lives in the tooling branch. Expose it as a source script and
+          # invoke through a package script so the build runs against the source
+          # checkout (the reviewed commit) rather than the tooling tree.
+          Copy-Item -Recurse -Force ../tooling/scripts/runtime-release scripts/runtime-release
+          $pj = Get-Content -Raw package.json | ConvertFrom-Json
+          $pj.scripts | Add-Member -NotePropertyName 'runtime:windows:build' -NotePropertyValue 'tsx scripts/runtime-release/build-windows-runtime.ts' -Force
+          ($pj | ConvertTo-Json -Depth 10) | Set-Content -Encoding utf8 package.json
+          pnpm run runtime:windows:build -- --out ../dist-desktop/runtime --node-exe $node --runtime-revision '${{ steps.revision.outputs.runtime-revision }}' --min-desktop-version '${{ inputs.min-desktop-version }}'
         working-directory: source
 
       - uses: actions/upload-artifact@v7
