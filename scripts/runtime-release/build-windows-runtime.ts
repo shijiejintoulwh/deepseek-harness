@@ -80,48 +80,126 @@ function removeTreeNoFollow(target: string): void {
 }
 
 /** Copy one file or directory tree, rejecting links so the archive stays self-contained. */
-function copyVendoredFile(source: string, destination: string): void {
+function copyPackageFile(source: string, destination: string): void {
   const info = lstatSync(source)
-  if (info.isSymbolicLink()) throw new Error(`vendored runtime package contains a link: ${source}`)
+  if (info.isSymbolicLink()) throw new Error(`runtime package source contains a link: ${source}`)
   if (info.isDirectory()) {
     mkdirSync(destination, { recursive: true })
-    for (const name of readdirSync(source)) copyVendoredFile(join(source, name), join(destination, name))
+    for (const name of readdirSync(source)) copyPackageFile(join(source, name), join(destination, name))
     return
   }
   copyFileSync(source, destination)
 }
 
-/**
- * Inject vendored framework packages the production deploy omitted. `pnpm deploy
- * --prod` skips packages that appear only as peer dependencies of workspace
- * entries, while the runtime imports every vendored cordis plugin at boot. Copy
- * the publishable form of each missing package from `vendor/` into the deployed
- * tree; packages pnpm already injected are left untouched.
- * @param root - repository root containing `vendor/`.
- * @param appDirectory - deployed production tree receiving the copies.
- */
-function ensureVendoredRuntimePackages(root: string, appDirectory: string): void {
-  const vendorRoot = join(root, 'vendor')
-  for (const entry of readdirSync(vendorRoot)) {
-    const packageDirectory = join(vendorRoot, entry)
-    if (!lstatSync(packageDirectory).isDirectory()) continue
-    const manifestPath = join(packageDirectory, 'package.json')
-    const manifest = JSON.parse(readTextFileSync(manifestPath, 'utf8')) as { name?: unknown }
-    if (typeof manifest.name !== 'string') throw new Error(`vendored package has no name: ${manifestPath}`)
-    const segments = manifest.name.split('/')
-    const scope = segments.length === 2 ? segments[0] : undefined
-    const installableName = (segments.length === 1 || (scope !== undefined && scope.startsWith('@')))
-      && segments.every(segment => segment.length > 0 && !segment.startsWith('.') && !segment.includes('\\'))
-    if (!installableName) throw new Error(`vendored package name is not a safe install path: ${manifest.name}`)
-    const destination = join(appDirectory, 'node_modules', ...segments)
-    if (existsSync(destination)) continue
-    console.log(`injecting vendored runtime package: ${manifest.name}`)
-    mkdirSync(destination, { recursive: true })
-    for (const name of ['package.json', 'LICENSE', 'LICENSE.md', 'README.md', 'bin.js', 'lib', 'src']) {
-      const source = join(packageDirectory, name)
-      if (existsSync(source)) copyVendoredFile(source, join(destination, name))
+/** Publishable entries copied for one injected workspace package. */
+const PUBLISHABLE_PACKAGE_ENTRIES = [
+  'package.json',
+  'LICENSE',
+  'LICENSE.md',
+  'README.md',
+  'bin.js',
+  'lib',
+  'src',
+  'config',
+  'cordis.patch.yml',
+] as const
+
+/** Read a package name from one package.json, or return null for non-packages. */
+function readPackageName(manifestPath: string): string | null {
+  const manifest = JSON.parse(readTextFileSync(manifestPath, 'utf8')) as { name?: unknown }
+  if (typeof manifest.name !== 'string' || manifest.name === '') return null
+  const segments = manifest.name.split('/')
+  const scope = segments.length === 2 ? segments[0] : undefined
+  const installableName = (segments.length === 1 || (scope !== undefined && scope.startsWith('@')))
+    && segments.every(segment => segment.length > 0 && !segment.startsWith('.') && !segment.includes('\\'))
+  if (!installableName) throw new Error(`workspace package name is not a safe install path: ${manifest.name}`)
+  return manifest.name
+}
+
+/** Map injectable workspace package names to their checkout directories. */
+function workspacePackages(root: string): Map<string, string> {
+  const packages = new Map<string, string>()
+  const groups = [
+    { directory: join(root, 'packages'), nested: true },
+    { directory: join(root, 'vendor'), nested: false },
+    { directory: join(root, 'native', 'landlock-run', 'packages'), nested: false },
+  ]
+  for (const group of groups) {
+    if (!existsSync(group.directory)) continue
+    for (const entry of readdirSync(group.directory)) {
+      const candidates = group.nested
+        ? readdirSync(join(group.directory, entry))
+          .filter(name => lstatSync(join(group.directory, entry, name)).isDirectory())
+          .map(name => join(group.directory, entry, name))
+        : [join(group.directory, entry)]
+      for (const directory of candidates) {
+        if (!lstatSync(directory).isDirectory()) continue
+        const manifestPath = join(directory, 'package.json')
+        if (!existsSync(manifestPath)) continue
+        const name = readPackageName(manifestPath)
+        if (name !== null) packages.set(name, directory)
+      }
     }
   }
+  return packages
+}
+
+/** Collect every dependency name referenced by a package.json in the deployed tree. */
+function referencedPackageNames(nodeModules: string): Set<string> {
+  const names = new Set<string>()
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory)) {
+      const candidate = join(directory, entry)
+      const info = lstatSync(candidate)
+      if (info.isSymbolicLink() || !info.isDirectory()) continue
+      const manifestPath = join(candidate, 'package.json')
+      if (existsSync(manifestPath)) {
+        const manifest = JSON.parse(readTextFileSync(manifestPath, 'utf8')) as {
+          dependencies?: Record<string, unknown>
+          peerDependencies?: Record<string, unknown>
+          optionalDependencies?: Record<string, unknown>
+        }
+        for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies'] as const) {
+          for (const name of Object.keys(manifest[field] ?? {})) names.add(name)
+        }
+      }
+      if (entry !== '.bin') visit(candidate)
+    }
+  }
+  visit(nodeModules)
+  return names
+}
+
+/**
+ * Complete the deployed tree's workspace dependency closure. `pnpm deploy --prod`
+ * omits packages that appear only as peer dependencies of deployed entries,
+ * while the runtime imports them at boot (vendored cordis plugins, dsh-scope).
+ * Scan the deployed manifests for workspace names with no installed directory,
+ * copy each missing package in its publishable form from the checkout, and
+ * repeat until the closure settles.
+ * @param root - repository root with the built workspace.
+ * @param appDirectory - deployed production tree receiving the copies.
+ */
+function ensureWorkspaceRuntimePackages(root: string, appDirectory: string): void {
+  const packages = workspacePackages(root)
+  const nodeModules = join(appDirectory, 'node_modules')
+  for (let round = 0; round < 10; round += 1) {
+    const missing = [...referencedPackageNames(nodeModules)]
+      .filter(name => packages.has(name) && !existsSync(join(nodeModules, ...name.split('/'))))
+    if (missing.length === 0) return
+    for (const name of missing) {
+      console.log(`injecting workspace runtime package: ${name}`)
+      const sourceDirectory = packages.get(name)
+      if (sourceDirectory === undefined) continue
+      const destination = join(nodeModules, ...name.split('/'))
+      mkdirSync(destination, { recursive: true })
+      for (const entry of PUBLISHABLE_PACKAGE_ENTRIES) {
+        const source = join(sourceDirectory, entry)
+        if (existsSync(source)) copyPackageFile(source, join(destination, entry))
+      }
+    }
+  }
+  throw new Error('workspace runtime package closure did not settle after injecting missing packages')
 }
 
 /** Reject a deployment link that would make the archive depend on the build workspace. */
@@ -305,7 +383,7 @@ async function main(): Promise<void> {
     ])
     run(deploy.command, deploy.args, { cwd: root })
     assertLinksStayInside(appDirectory)
-    ensureVendoredRuntimePackages(root, appDirectory)
+    ensureWorkspaceRuntimePackages(root, appDirectory)
 
     const nodeDirectory = join(staging, 'node')
     mkdirSync(nodeDirectory, { mode: 0o700 })
