@@ -79,6 +79,51 @@ function removeTreeNoFollow(target: string): void {
   rmdirSync(target)
 }
 
+/** Copy one file or directory tree, rejecting links so the archive stays self-contained. */
+function copyVendoredFile(source: string, destination: string): void {
+  const info = lstatSync(source)
+  if (info.isSymbolicLink()) throw new Error(`vendored runtime package contains a link: ${source}`)
+  if (info.isDirectory()) {
+    mkdirSync(destination, { recursive: true })
+    for (const name of readdirSync(source)) copyVendoredFile(join(source, name), join(destination, name))
+    return
+  }
+  copyFileSync(source, destination)
+}
+
+/**
+ * Inject vendored framework packages the production deploy omitted. `pnpm deploy
+ * --prod` skips packages that appear only as peer dependencies of workspace
+ * entries, while the runtime imports every vendored cordis plugin at boot. Copy
+ * the publishable form of each missing package from `vendor/` into the deployed
+ * tree; packages pnpm already injected are left untouched.
+ * @param root - repository root containing `vendor/`.
+ * @param appDirectory - deployed production tree receiving the copies.
+ */
+function ensureVendoredRuntimePackages(root: string, appDirectory: string): void {
+  const vendorRoot = join(root, 'vendor')
+  for (const entry of readdirSync(vendorRoot)) {
+    const packageDirectory = join(vendorRoot, entry)
+    if (!lstatSync(packageDirectory).isDirectory()) continue
+    const manifestPath = join(packageDirectory, 'package.json')
+    const manifest = JSON.parse(readTextFileSync(manifestPath, 'utf8')) as { name?: unknown }
+    if (typeof manifest.name !== 'string') throw new Error(`vendored package has no name: ${manifestPath}`)
+    const segments = manifest.name.split('/')
+    const scope = segments.length === 2 ? segments[0] : undefined
+    const installableName = (segments.length === 1 || (scope !== undefined && scope.startsWith('@')))
+      && segments.every(segment => segment.length > 0 && !segment.startsWith('.') && !segment.includes('\\'))
+    if (!installableName) throw new Error(`vendored package name is not a safe install path: ${manifest.name}`)
+    const destination = join(appDirectory, 'node_modules', ...segments)
+    if (existsSync(destination)) continue
+    console.log(`injecting vendored runtime package: ${manifest.name}`)
+    mkdirSync(destination, { recursive: true })
+    for (const name of ['package.json', 'LICENSE', 'LICENSE.md', 'README.md', 'bin.js', 'lib', 'src']) {
+      const source = join(packageDirectory, name)
+      if (existsSync(source)) copyVendoredFile(source, join(destination, name))
+    }
+  }
+}
+
 /** Reject a deployment link that would make the archive depend on the build workspace. */
 function assertLinksStayInside(root: string, current: string = root): void {
   const rootAbsolute = resolve(root)
@@ -260,6 +305,7 @@ async function main(): Promise<void> {
     ])
     run(deploy.command, deploy.args, { cwd: root })
     assertLinksStayInside(appDirectory)
+    ensureVendoredRuntimePackages(root, appDirectory)
 
     const nodeDirectory = join(staging, 'node')
     mkdirSync(nodeDirectory, { mode: 0o700 })
