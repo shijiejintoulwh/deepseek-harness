@@ -127,13 +127,14 @@ function workspacePackages(root: string): Map<string, string> {
   for (const group of groups) {
     if (!existsSync(group.directory)) continue
     for (const entry of readdirSync(group.directory)) {
+      const entryPath = join(group.directory, entry)
+      if (!lstatSync(entryPath).isDirectory()) continue
       const candidates = group.nested
-        ? readdirSync(join(group.directory, entry))
-          .filter(name => lstatSync(join(group.directory, entry, name)).isDirectory())
-          .map(name => join(group.directory, entry, name))
-        : [join(group.directory, entry)]
+        ? readdirSync(entryPath)
+          .filter(name => lstatSync(join(entryPath, name)).isDirectory())
+          .map(name => join(entryPath, name))
+        : [entryPath]
       for (const directory of candidates) {
-        if (!lstatSync(directory).isDirectory()) continue
         const manifestPath = join(directory, 'package.json')
         if (!existsSync(manifestPath)) continue
         const name = readPackageName(manifestPath)
