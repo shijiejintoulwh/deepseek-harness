@@ -220,6 +220,7 @@ jobs:
       - name: Create immutable GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RUNTIME_TAG: ${{ needs.build.outputs.runtime-tag }}
           SOURCE_REF: ${{ needs.build.outputs.source-sha }}
         run: gh release create "$RUNTIME_TAG" dist-desktop/runtime/* --target "$SOURCE_REF" --title "$RUNTIME_TAG" --notes "Signed Windows Harness runtime from $SOURCE_REF."

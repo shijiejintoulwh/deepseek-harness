@@ -104,6 +104,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           $tag = '${{ inputs.desktop-tag }}'
           if ($tag -notlike 'desktop-v*') { throw 'desktop-tag must start with desktop-v.' }
