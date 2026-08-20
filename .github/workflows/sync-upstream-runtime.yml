@@ -13,10 +13,6 @@ on:
 
 permissions:
   contents: write
-  # The sync job merges upstream master (which keeps editing .github/workflows/)
-  # and pushes it back; GITHUB_TOKEN refuses to write workflow files without
-  # this permission, which was failing the run every 6h.
-  workflows: write
 
 concurrency:
   group: sync-upstream-windows-runtime
