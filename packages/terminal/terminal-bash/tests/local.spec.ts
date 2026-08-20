@@ -285,8 +285,10 @@ describe.skipIf(!hasPwsh)('terminal-bash pwsh real shell', () => {
     process.env.DSH_TEST_SECRET = 'must-not-leak'
     try {
       const { ctx, root, agent } = await harness('danger-full-access', {
-        idleSilenceMs: 300,
-        handoffGraceMs: 300,
+        // Loaded darwin CI delays pwsh's prompt-marker poll cycle past a
+        // 300ms silence bound; marker-based readiness still wins with slack.
+        idleSilenceMs: 1_500,
+        handoffGraceMs: 1_500,
         timeoutMs: 8_000,
       }, 'pwsh')
       const created = await ctx.terminals.spawn(agent, { type: 'shell', name: 'main', cwd: root })
@@ -317,8 +319,8 @@ describe.skipIf(!hasPwsh)('terminal-bash pwsh real shell', () => {
 
   it('pins UTF-8 output encoding so non-ASCII output survives the byte decode', async () => {
     const { ctx, root, agent } = await harness('danger-full-access', {
-      idleSilenceMs: 300,
-      handoffGraceMs: 300,
+      idleSilenceMs: 1_500,
+      handoffGraceMs: 1_500,
       timeoutMs: 8_000,
     }, 'pwsh')
     const created = await ctx.terminals.spawn(agent, { type: 'shell', name: 'main', cwd: root })
