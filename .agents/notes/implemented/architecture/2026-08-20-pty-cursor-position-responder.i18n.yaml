@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-20-pty-cursor-position-responder.md
+2026-08-20-pty-cursor-position-responder.md: 16a57fee35dcd5e760150e59daeee7bf0203a680
+2026-08-20-pty-cursor-position-responder.zh.md: 61ad534fd071f94d9d8033f3128fa5b3ebfe57f4
