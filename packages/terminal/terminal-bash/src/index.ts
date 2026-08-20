@@ -66,8 +66,12 @@ function childEnvironment(spec: TerminalBackendSpawnSpec, dialect: ShellDialect)
   }
   if (dialect === 'pwsh') {
     // pwsh ignores PS1/PROMPT_COMMAND; its prompt is installed by the startup
-    // bootstrap instead, and NO_COLOR keeps the renderer quiet.
-    return { ...common, NO_COLOR: '1' }
+    // bootstrap instead, and NO_COLOR keeps the renderer quiet. PSReadLine's
+    // interactive reader never comes up on a dumb terminal — macOS pwsh wedges
+    // after the first submitted line with no prompt, echo, or command output —
+    // so the pwsh dialect keeps a real VT terminal and the sanitizer strips
+    // the remaining escape sequences.
+    return { ...common, TERM: 'xterm-256color', NO_COLOR: '1' }
   }
   return {
     ...common,
