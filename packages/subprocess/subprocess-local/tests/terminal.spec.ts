@@ -91,6 +91,34 @@ function makeHandle(pty: FakePty, inspector: ProcessInspector, graceMs: number):
 }
 
 describe('LocalTerminalHandle', () => {
+  it('answers cursor-position queries so POSIX console stacks finish initializing', () => {
+    const pty = new FakePty()
+    makeHandle(pty, new FakeInspector(), 10)
+    pty.emitData('before \x1b[6n after')
+    expect(pty.writes).toEqual(['\x1b[1;1R'])
+    pty.emitData('pair \x1b[6n\x1b[6n tail')
+    expect(pty.writes).toEqual(['\x1b[1;1R', '\x1b[1;1R', '\x1b[1;1R'])
+  })
+
+  it('answers cursor-position queries split across data chunks', () => {
+    const pty = new FakePty()
+    makeHandle(pty, new FakeInspector(), 10)
+    pty.emitData('x\x1b[6')
+    expect(pty.writes).toEqual([])
+    pty.emitData('n')
+    expect(pty.writes).toEqual(['\x1b[1;1R'])
+  })
+
+  it('ignores other device-status reports and clears stale partial queries', () => {
+    const pty = new FakePty()
+    makeHandle(pty, new FakeInspector(), 10)
+    pty.emitData('\x1b[5n\x1b[0n')
+    pty.emitData('\x1b[6')
+    pty.emitData('x')
+    pty.emitData('\x1b[6n')
+    expect(pty.writes).toEqual(['\x1b[1;1R'])
+  })
+
   it('force-kills descendants around the shell during synchronous host exit', () => {
     const pty = new FakePty()
     const inspector = new FakeInspector()
