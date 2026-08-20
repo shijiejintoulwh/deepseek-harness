@@ -16,6 +16,24 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/** Device Status Report cursor-position query a child console stack emits. */
+const CURSOR_POSITION_QUERY = '\x1b[6n'
+
+/** Canned cursor-position reply: row 1, column 1. */
+const CURSOR_POSITION_REPLY = '\x1b[1;1R'
+
+/**
+ * Longest query prefix ending the buffer, so a query split across data chunks
+ * still completes on its final bytes.
+ */
+function trailingPartialQuery(buffered: string): string {
+  const bound = Math.min(CURSOR_POSITION_QUERY.length - 1, buffered.length)
+  for (let keep = bound; keep > 0; keep -= 1) {
+    if (buffered.endsWith(CURSOR_POSITION_QUERY.slice(0, keep))) return buffered.slice(-keep)
+  }
+  return ''
+}
+
 function signalName(number: number | undefined): NodeJS.Signals | null {
   if (number === undefined || number === 0) return null
   for (const [name, value] of Object.entries(constants.signals)) {
@@ -43,6 +61,8 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   private cleanup: Promise<void> | undefined
   private exited = false
   private trackedDescendants: ProcessIdentity[] = []
+  /** Partial trailing cursor-position query bytes carried across data chunks. */
+  private queryCarry = ''
   /** The spawned shell's start identity; scans stop adopting members once the root pid no longer carries it. */
   private readonly rootIdentity: ProcessIdentity | undefined
 
@@ -61,7 +81,10 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
     this.pid = terminal.pid
     this.rootIdentity = inspector.processTree(this.pid).find(member => member.pid === this.pid)
     this.done = this.outcome.promise
-    this.dataDisposable = terminal.onData((data) => { this.output.write(Buffer.from(data, 'utf8')) })
+    this.dataDisposable = terminal.onData((data) => {
+      this.output.write(Buffer.from(data, 'utf8'))
+      this.respondToCursorPositionQuery(this.queryCarry + data)
+    })
     this.exitDisposable = terminal.onExit(({ exitCode, signal: exitSignal }) => {
       if (this.exited) return
       this.exited = true
@@ -78,6 +101,26 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   async write(data: string): Promise<void> {
     if (this.exited) throw new Error('terminal process has exited')
     this.terminal.write(data)
+  }
+
+  /**
+   * Answer terminal cursor-position queries (DSR-CPR) on the PTY input stream.
+   * POSIX console stacks block interactive startup on the reply — pwsh emits
+   * `ESC[6n` and never renders its first prompt without one — and node-pty is
+   * not a terminal emulator, so the master side must answer as one. ConPTY
+   * services the query internally, keeping this dormant on Windows.
+   */
+  private respondToCursorPositionQuery(buffered: string): void {
+    if (this.exited) {
+      this.queryCarry = ''
+      return
+    }
+    let index = buffered.indexOf(CURSOR_POSITION_QUERY)
+    while (index >= 0) {
+      this.terminal.write(CURSOR_POSITION_REPLY)
+      index = buffered.indexOf(CURSOR_POSITION_QUERY, index + CURSOR_POSITION_QUERY.length)
+    }
+    this.queryCarry = trailingPartialQuery(buffered)
   }
 
   // Local inspection is synchronous; the seam returns a promise for remote transports.
