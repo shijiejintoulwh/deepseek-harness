@@ -368,7 +368,10 @@ async function main(): Promise<void> {
   assertRuntimeStagingDirectory(staging)
   try {
     if (!input.skipBuild) {
-      const build = pnpmInvocation(['run', 'build'])
+      // The official profile injects DSH_CLIENT_TITLE='DeepSeek Harness' and
+      // the official brand slots into the bundled Web UI; the default build
+      // profile leaves the client title at its 'DSH Local Build' fallback.
+      const build = pnpmInvocation(['run', 'build:official'])
       run(build.command, build.args, { cwd: root })
     }
     const appDirectory = join(staging, 'app')
