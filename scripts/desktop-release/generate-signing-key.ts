@@ -8,7 +8,7 @@ import { isEntry } from '../release/process.ts'
 
 /** Paths produced by the desktop update signing-key generator. */
 export interface DesktopSigningKeyPaths {
-  /** PKCS#8 private key for the protected desktop-release environment. */
+  /** PKCS#8 private key retained on the local release machine. */
   readonly privateKey: string
   /** SPKI public key embedded in the desktop shell. */
   readonly publicKey: string

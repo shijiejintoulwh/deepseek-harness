@@ -20,7 +20,7 @@
 
 运行时 workflow 产出一个自包含的 Windows x64 ZIP、`runtime-manifest.json` 与 Ed25519 分离签名；清单绑定 Harness 版本、打包修订、源码提交、Node 版本、压缩包大小、SHA-256 摘要、最低桌面端版本与桌面协议版本。
 
-桌面端 workflow 会发布 NSIS 安装器、对应 blockmap、一个通道文件（稳定版使用 `latest.yml`，预览版使用 `preview.yml`）、`desktop-update-manifest.json` 与 Ed25519 分离签名。签名后的桌面端清单会绑定壳版本、通道、源码提交、安装器与 blockmap 的名称、大小和 SHA-256 摘要；受保护的发布 job 会拒绝不一致或不完整的 release 文件集。
+桌面端 workflow 会在不取得发布凭证的情况下构建并验证 NSIS 安装器、对应 blockmap、一个通道文件（稳定版使用 `latest.yml`，预览版使用 `preview.yml`）与 `desktop-update-manifest.json`。本地发布机先按照预期版本、`desktop-v*` 标签、通道和源码提交验证这组未签名文件，再添加 Ed25519 分离签名并准确发布这五个文件。签名后的桌面端清单会绑定壳版本、通道、源码提交、安装器与 blockmap 的名称、大小和 SHA-256 摘要。
 
 桌面安装器把一组已验证的 release 作为离线种子嵌入，因此首次启动不依赖 GitHub 可用性。
 
@@ -50,7 +50,7 @@ Electron 用户数据（包括桌面版专用的 `DSH_HOME`）保存在 `%APPDAT
 
 壳下载与 Harness 运行时下载互斥。壳更新只替换 Electron 安装文件：`%APPDATA%` 用户数据、桌面版专用 Harness home、`%LOCALAPPDATA%` 运行时版本和运行时回滚状态均位于安装目录之外，不会被替换。
 
-上游同步与 release 发布无需人工参与；个人电脑上的安装继续保留既有的下载与重启确认，防止后台检查在未经同意时占用带宽或打断正在进行的工作。
+上游同步与运行时 release 发布无需人工参与。桌面壳发布需要本地签名和明确的 GitHub Release 命令；个人电脑上的安装继续保留既有的下载与重启确认，防止后台检查在未经同意时占用带宽或打断正在进行的工作。
 
 候选版本只有在页面成功加载并保持存活 30 秒后才会成为当前版本；候选启动失败时保留原运行时，两次失败后拒绝该候选，菜单也可手动交换当前版本与上一个版本以完成回滚。
 
@@ -66,7 +66,7 @@ Electron 用户数据（包括桌面版专用的 `DSH_HOME`）保存在 `%APPDAT
 pnpm exec tsx scripts/runtime-release/generate-signing-key.ts --out .desktop-local/runtime-signing
 ```
 
-在被忽略的壳目录中生成独立的桌面端更新签名密钥对。把 `desktop-update-public.pem` 嵌入 [`src/config.ts`](src/config.ts)，并把 `desktop-update-private.pem` 作为 `desktop-release` GitHub environment 的 `DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM` secret 保护；生成器拒绝替换任一已有密钥：
+在被忽略的壳目录中生成独立的桌面端更新签名密钥对。把 `desktop-update-public.pem` 嵌入 [`src/config.ts`](src/config.ts)，并让 `desktop-update-private.pem` 只保留在本地发布机上；不要把它上传到 GitHub Actions 或 Release。生成器拒绝替换任一已有密钥：
 
 ```powershell
 pnpm exec tsx scripts/desktop-release/generate-signing-key.ts --out .desktop-local/shell-signing
@@ -80,7 +80,13 @@ pnpm exec tsx scripts/runtime-release/prepare-desktop-seed.ts --from dist-deskto
 pnpm run desktop:dist
 ```
 
-[`sync-upstream-runtime.yml`](../../.github/workflows/sync-upstream-runtime.yml)、[`windows-runtime-release.yml`](../../.github/workflows/windows-runtime-release.yml) 与 [`windows-desktop-release.yml`](../../.github/workflows/windows-desktop-release.yml) 是权威同步与发布路径。自动构建 job 不会获得签名机密；受保护且不检出仓库的 job 会先验证严格清单字段、源提交、目标、修订、兼容性、完整文件集合、压缩包大小与 SHA-256，再对该清单的准确字节签名。
+把四个未签名的桌面端文件整理到 `dist-desktop/release` 后，使用独立复核的 release 输入对其签名。该命令会先验证准确文件集、清单字段、通道元数据、源码提交、大小与摘要，再读取本地私钥并创建 `desktop-update-manifest.sig`：
+
+```powershell
+pnpm run desktop:release:sign -- --directory dist-desktop/release --private-key .desktop-local/shell-signing/desktop-update-private.pem --version 1.0.4-preview.3 --tag desktop-v1.0.4-preview.3 --channel preview --source-commit <40-hex-commit>
+```
+
+[`sync-upstream-runtime.yml`](../../.github/workflows/sync-upstream-runtime.yml) 与 [`windows-runtime-release.yml`](../../.github/workflows/windows-runtime-release.yml) 是权威运行时同步与发布路径。[`windows-desktop-release.yml`](../../.github/workflows/windows-desktop-release.yml) 是 `desktop-v*` 标签的权威干净 Windows 构建与打包后冒烟测试路径；它仅用仓库读取权限上传包含四个文件的未签名候选。只有该标签 workflow 成功后，发布者才会发布本地签名后的五文件集合。
 
 ## 当前限制
 

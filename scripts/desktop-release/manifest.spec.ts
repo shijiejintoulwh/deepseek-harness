@@ -12,6 +12,7 @@ import {
   signDesktopManifest,
   validateUnsignedDesktopRelease,
 } from './manifest.ts'
+import { signDesktopRelease } from './sign-manifest.ts'
 
 const SOURCE_COMMIT = 'c'.repeat(40)
 const PUBLISHED_AT = '2026-08-21T00:00:00.000Z'
@@ -44,6 +45,25 @@ describe('desktop shell release manifest', () => {
       expect(verify(null, validated.bytes, keys.publicKey, signature)).toBe(true)
     } finally {
       rmSync(fixture.directory, { recursive: true, force: true })
+    }
+  })
+
+  it('validates independent release inputs before signing with a local key file', () => {
+    const fixture = desktopFixture('1.0.5-preview.7')
+    const keyDirectory = mkdtempSync(join(tmpdir(), 'dsh-desktop-local-key-test-'))
+    try {
+      generateDesktopManifest(fixture.directory, fixture.version, SOURCE_COMMIT, PUBLISHED_AT)
+      const keys = generateDesktopSigningKey(keyDirectory)
+      const signaturePath = signDesktopRelease(fixture.directory, keys.privateKey, expectations(fixture.version))
+      const manifestBytes = readFileSync(join(fixture.directory, 'desktop-update-manifest.json'))
+      const publicKey = readFileSync(keys.publicKey, 'utf8')
+      const signature = Buffer.from(readFileSync(signaturePath, 'utf8').trim(), 'base64')
+      expect(verify(null, manifestBytes, publicKey, signature)).toBe(true)
+      expect(() => signDesktopRelease(fixture.directory, keys.privateKey, expectations(fixture.version)))
+        .toThrow('missing or unexpected files')
+    } finally {
+      rmSync(fixture.directory, { recursive: true, force: true })
+      rmSync(keyDirectory, { recursive: true, force: true })
     }
   })
 

@@ -20,7 +20,7 @@ Automatic operation requires both workflow files on the default branch, GitHub A
 
 The runtime workflow emits one self-contained Windows x64 ZIP, `runtime-manifest.json`, and an Ed25519 detached signature; the manifest binds the Harness version, packaging revision, source commit, Node version, archive size, SHA-256 digest, minimum desktop version, and desktop protocol version.
 
-The desktop workflow publishes the NSIS installer, its blockmap, one channel file (`latest.yml` for stable or `preview.yml` for preview), `desktop-update-manifest.json`, and an Ed25519 detached signature. The signed desktop manifest binds the shell version, channel, source commit, installer and blockmap names, sizes, and SHA-256 digests; the protected publication job rejects a mismatched or incomplete release set.
+The desktop workflow builds and validates the NSIS installer, its blockmap, one channel file (`latest.yml` for stable or `preview.yml` for preview), and `desktop-update-manifest.json` without receiving a release credential. The local release machine validates that unsigned set against the intended version, `desktop-v*` tag, channel, and source commit before adding the Ed25519 detached signature and publishing exactly those five files. The signed desktop manifest binds the shell version, channel, source commit, installer and blockmap names, sizes, and SHA-256 digests.
 
 The desktop installer bundles one verified release set as an offline seed, so first launch does not depend on GitHub availability.
 
@@ -50,7 +50,7 @@ Finding a shell release does not start a download. The host asks before `electro
 
 Shell download and Harness runtime download are mutually exclusive. A shell update replaces only the Electron installation files: `%APPDATA%` user data, the desktop-specific Harness home, `%LOCALAPPDATA%` runtime versions, and runtime rollback state remain outside the installation directory and are not replaced.
 
-Upstream synchronization and release publication are unattended; installation on a personal machine keeps the existing download and restart confirmations so a background check cannot consume bandwidth or interrupt active work without consent.
+Upstream synchronization and runtime release publication are unattended. Desktop shell publication requires a local signature and an explicit GitHub Release command; installation on a personal machine keeps the existing download and restart confirmations so a background check cannot consume bandwidth or interrupt active work without consent.
 
 A candidate becomes active only after its page loads and remains alive for 30 seconds; failed candidate launches retain the current runtime, two failed attempts reject the candidate, and the menu can swap the current and previous versions for a manual rollback.
 
@@ -66,7 +66,7 @@ Generate the signing pair once into the ignored local directory, then embed the 
 pnpm exec tsx scripts/runtime-release/generate-signing-key.ts --out .desktop-local/runtime-signing
 ```
 
-Generate the independent desktop-update signing pair into the ignored shell directory. Embed `desktop-update-public.pem` in [`src/config.ts`](src/config.ts) and protect `desktop-update-private.pem` as the `DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM` secret in the `desktop-release` GitHub environment; the generator refuses to replace either key:
+Generate the independent desktop-update signing pair into the ignored shell directory. Embed `desktop-update-public.pem` in [`src/config.ts`](src/config.ts) and retain `desktop-update-private.pem` only on the local release machine; do not upload it to GitHub Actions or a Release. The generator refuses to replace either key:
 
 ```powershell
 pnpm exec tsx scripts/desktop-release/generate-signing-key.ts --out .desktop-local/shell-signing
@@ -80,7 +80,13 @@ pnpm exec tsx scripts/runtime-release/prepare-desktop-seed.ts --from dist-deskto
 pnpm run desktop:dist
 ```
 
-[`sync-upstream-runtime.yml`](../../.github/workflows/sync-upstream-runtime.yml), [`windows-runtime-release.yml`](../../.github/workflows/windows-runtime-release.yml), and [`windows-desktop-release.yml`](../../.github/workflows/windows-desktop-release.yml) are the authoritative synchronization and publication paths. The automated build job receives no signing secret; a protected checkout-free job validates the strict manifest fields, source commit, target, revision, compatibility, complete file set, archive size, and SHA-256 before signing those exact manifest bytes.
+After assembling the four unsigned desktop files in `dist-desktop/release`, sign them with independently reviewed release inputs. The command validates the exact file set, manifest fields, channel metadata, source commit, sizes, and digests before it reads the local private key and creates `desktop-update-manifest.sig`:
+
+```powershell
+pnpm run desktop:release:sign -- --directory dist-desktop/release --private-key .desktop-local/shell-signing/desktop-update-private.pem --version 1.0.4-preview.3 --tag desktop-v1.0.4-preview.3 --channel preview --source-commit <40-hex-commit>
+```
+
+[`sync-upstream-runtime.yml`](../../.github/workflows/sync-upstream-runtime.yml) and [`windows-runtime-release.yml`](../../.github/workflows/windows-runtime-release.yml) are the authoritative runtime synchronization and publication paths. [`windows-desktop-release.yml`](../../.github/workflows/windows-desktop-release.yml) is the authoritative clean Windows build and packaged-smoke path for a `desktop-v*` tag; it uploads only the unsigned four-file candidate with repository read permission. The release operator publishes the locally signed five-file set only after that tag workflow succeeds.
 
 ## Current limits
 

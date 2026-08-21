@@ -40,7 +40,7 @@ MCowBQYDK2VwAyEAIWLIQuMcNKNYTLaEC6cKhctUebll+Vf3YTMyAT13uV0=
 
 /**
  * Ed25519 public key dedicated to desktop update manifests. Its private key
- * remains outside the repository in the protected desktop-release environment.
+ * remains outside the repository on the local release machine.
  */
 export const DESKTOP_UPDATE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAgZawE9R9NoQ76IpMGoBNsZcKcbQ55zGsAn9XLvhOluM=

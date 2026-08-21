@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import * as yaml from 'js-yaml'
 import { describe, expect, it } from 'vitest'
-import { desktopReleaseNames, generateDesktopManifest } from './desktop-release/manifest.ts'
 
 const root = resolve(import.meta.dirname, '..')
 const runnerPrivatePnpmDestination = '${{ runner.temp }}/setup-pnpm'
@@ -376,29 +375,30 @@ describe('Python release workflows', () => {
 })
 
 describe('Windows runtime automation', () => {
-  it('builds desktop update assets without release secrets and publishes only after protected validation', () => {
+  it('builds and validates unsigned desktop update assets without release credentials', () => {
     const workflow = loadWorkflow('.github/workflows/windows-desktop-release.yml')
     const dispatch = workflowEvent(workflow, 'workflow_dispatch')
     const push = workflowEvent(workflow, 'push')
     const build = workflowJob(workflow, 'build')
-    const publish = workflowJob(workflow, 'publish')
     const desktopPackage: unknown = JSON.parse(readFileSync(resolve(root, 'apps/desktop/package.json'), 'utf8'))
     const builder = readFileSync(resolve(root, 'apps/desktop/electron-builder.yml'), 'utf8')
     if (!isRecord(dispatch.inputs)
       || !isRecord(desktopPackage)
       || typeof desktopPackage.version !== 'string'
       || !Array.isArray(build.steps)
-      || !Array.isArray(publish.steps)) {
-      throw new TypeError('Windows desktop release must define inputs, a package version, and release steps')
+      || !isRecord(workflow.jobs)) {
+      throw new TypeError('Windows desktop release must define inputs, a package version, and build steps')
     }
 
     expect(dispatch.inputs).toMatchObject({
       'source-ref': { type: 'string', default: 'dev-windesktop' },
       'runtime-tag': { type: 'string', required: false },
       'desktop-tag': { type: 'string', default: `desktop-v${desktopPackage.version}` },
-      publish: { type: 'boolean', default: false },
     })
+    expect(dispatch.inputs).not.toHaveProperty('publish')
     expect(push.tags).toEqual(['desktop-v*'])
+    expect(workflow.permissions).toEqual({ contents: 'read' })
+    expect(Object.keys(workflow.jobs)).toEqual(['build'])
     expect(workflow.concurrency).toEqual({
       group: 'windows-desktop-release',
       'cancel-in-progress': false,
@@ -411,118 +411,13 @@ describe('Windows runtime automation', () => {
     expect(buildText).toContain("$builderMetadata = 'dist-desktop/latest.yml'")
     expect(buildText).toContain('(Join-Path $release $env:METADATA)')
     expect(buildText).not.toContain('DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM')
+    expect(buildText).not.toContain('desktop-update-manifest.sig')
+    expect(buildText).not.toContain('gh release create')
     expect(builder).toContain('provider: github')
     expect(builder).toContain('owner: shijiejintoulwh')
     expect(builder).toContain('repo: deepseek-harness')
     expect(builder).toContain('tagNamePrefix: desktop-v')
     expect(builder).toContain('differentialPackage: true')
-
-    expect(publish).toMatchObject({
-      if: "github.event_name == 'push' || inputs.publish",
-      needs: 'build',
-      'runs-on': 'ubuntu-latest',
-      environment: 'desktop-release',
-      permissions: { contents: 'write' },
-    })
-    expect((publish.steps as unknown[]).some(
-      step => isRecord(step) && typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'),
-    )).toBe(false)
-    const publishText = JSON.stringify(publish.steps)
-    expect(publishText).toContain('DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM')
-    expect(publishText).toContain('unsigned desktop artifact contains missing or unexpected files')
-    expect(publishText).toContain("key.asymmetricKeyType !== 'ed25519'")
-    expect(publishText).toContain("'desktop-v' + manifest.version")
-    expect(publishText).toContain("derivedChannel === 'preview' ? 'preview.yml' : 'latest.yml'")
-    expect(publishText).toContain('desktop-update-manifest.sig')
-    expect(publishText).toContain('gh release create')
-    expect(publishText).toContain('flags+=(--prerelease)')
-    expect(publishText).toContain('--verify-tag')
-  })
-
-  it('executes the protected desktop signer and rejects tampering, mismatched tags, and missing assets', () => {
-    const workflow = loadWorkflow('.github/workflows/windows-desktop-release.yml')
-    const publish = workflowJob(workflow, 'publish')
-    if (!Array.isArray(publish.steps)) throw new TypeError('Windows desktop publisher must define steps')
-    const signStep = (publish.steps as unknown[])
-      .filter(isRecord)
-      .find(step => step.name === 'Verify exact desktop assets and sign exact manifest bytes')
-    if (!isRecord(signStep) || typeof signStep.run !== 'string') {
-      throw new TypeError('Windows desktop publisher must define its embedded signer')
-    }
-    const command = signStep.run.trim()
-    const prefix = 'node --input-type=module -e "'
-    if (!command.startsWith(prefix) || !command.endsWith('"')) {
-      throw new TypeError('Windows desktop signer must keep one extractable Node command')
-    }
-    const signer = command.slice(prefix.length, -1)
-    const temporary = mkdtempSync(join(tmpdir(), 'dsh-desktop-signer-test-'))
-    const release = join(temporary, 'dist-desktop', 'release')
-    const version = '1.0.5-preview.1'
-    const sourceSha = '7'.repeat(40)
-    const names = desktopReleaseNames(version)
-    const installer = Buffer.from('verified desktop installer')
-    const blockmap = Buffer.from('verified differential blockmap')
-    const { privateKey, publicKey } = generateKeyPairSync('ed25519')
-    const environment = {
-      ...process.env,
-      DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM: privateKey.export({ format: 'pem', type: 'pkcs8' }).toString(),
-      EXPECTED_CHANNEL: 'preview',
-      EXPECTED_METADATA: names.metadata,
-      EXPECTED_SOURCE_SHA: sourceSha,
-      EXPECTED_TAG: `desktop-v${version}`,
-      EXPECTED_VERSION: version,
-    }
-
-    const reset = (): void => {
-      rmSync(release, { recursive: true, force: true })
-      mkdirSync(release, { recursive: true })
-      writeFileSync(join(release, names.installer), installer)
-      writeFileSync(join(release, names.blockmap), blockmap)
-      const sha512 = createHash('sha512').update(installer).digest('base64')
-      writeFileSync(join(release, names.metadata), [
-        `version: ${version}`,
-        'files:',
-        `  - url: ${names.installer}`,
-        `    sha512: ${sha512}`,
-        `    size: ${installer.length}`,
-        '',
-      ].join('\n'))
-      generateDesktopManifest(release, version, sourceSha, '2026-08-21T00:00:00.000Z')
-    }
-    const execute = (env: NodeJS.ProcessEnv = environment): ReturnType<typeof spawnSync> => spawnSync(
-      process.execPath,
-      ['--input-type=module', '-e', signer],
-      { cwd: temporary, encoding: 'utf8', env },
-    )
-
-    try {
-      reset()
-      const signed = execute()
-      expect(signed.stderr).toBe('')
-      expect(signed.status).toBe(0)
-      const manifestBytes = readFileSync(join(release, 'desktop-update-manifest.json'))
-      const signature = Buffer.from(readFileSync(join(release, 'desktop-update-manifest.sig'), 'utf8').trim(), 'base64')
-      expect(verify(null, manifestBytes, publicKey, signature)).toBe(true)
-
-      reset()
-      writeFileSync(join(release, names.installer), 'tampered installer')
-      const tampered = execute()
-      expect(tampered.status).not.toBe(0)
-      expect(tampered.stderr).toContain('desktop release files do not match their manifest')
-
-      reset()
-      const wrongTag = execute({ ...environment, EXPECTED_TAG: 'desktop-v1.0.5-preview.2' })
-      expect(wrongTag.status).not.toBe(0)
-      expect(wrongTag.stderr).toContain('desktop release tag is invalid')
-
-      reset()
-      rmSync(join(release, names.blockmap))
-      const missing = execute()
-      expect(missing.status).not.toBe(0)
-      expect(missing.stderr).toContain('missing or unexpected files')
-    } finally {
-      rmSync(temporary, { recursive: true, force: true })
-    }
   })
 
   it('merge-syncs official master without rewriting either fork branch', () => {

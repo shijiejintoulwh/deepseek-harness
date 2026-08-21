@@ -136,6 +136,7 @@
     "runtime:windows:build": "tsx scripts/runtime-release/build-windows-runtime.ts",
     "runtime:windows:keygen": "tsx scripts/runtime-release/generate-signing-key.ts",
     "runtime:windows:prepare-seed": "tsx scripts/runtime-release/prepare-desktop-seed.ts",
+    "desktop:release:sign": "tsx scripts/desktop-release/sign-manifest.ts",
     "desktop:build": "pnpm --filter dsh-desktop run build",
     "desktop:dev": "pnpm --filter dsh-desktop run dev",
     "desktop:dist": "pnpm --filter dsh-desktop run dist",
