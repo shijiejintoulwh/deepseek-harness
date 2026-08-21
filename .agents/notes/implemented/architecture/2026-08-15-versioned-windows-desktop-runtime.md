@@ -16,7 +16,7 @@ The fork also needs a clear ownership boundary: desktop-only code remains on `de
 
 [`apps/desktop`](../../../../apps/desktop/README.md) is a private Electron host with version `1.x`; it is excluded from the npm dsh release family, whose publishable applications remain `apps/cli` and `apps/web` under the [npm release decision](../process/2026-08-10-npm-release-sequences.md).
 
-The shell is released manually from `dev-windesktop` as `desktop-v*`; ordinary shell updates are not automatic. A preview shell keeps the same SemVer prerelease suffix in its package metadata and tag, and the dispatch marks its GitHub Release as a prerelease; a stable shell omits both.
+The shell is released from `dev-windesktop` as `desktop-v*`. Its independent [in-app shell updater](../feature/2026-08-21-windows-desktop-shell-updates.md) preserves the shell/runtime ownership split: stable and preview channels advance the Electron installation without replacing versioned Harness runtime state. A preview shell keeps the same SemVer prerelease suffix in its package metadata and tag, while a stable shell omits both.
 
 `desktop-landing` is a dependency-free static page for the community Windows release. Its first screen, project notice, and footer identify the application as community-maintained and not an official DeepSeek desktop client. Separate links name the official Harness website, the upstream repository, and the community desktop branch; the Windows button points to one reviewed versioned installer rather than resolving a mutable download in the browser.
 
@@ -50,11 +50,11 @@ Runtime discovery prefers GitHub's anonymous Releases REST endpoint. A REST rate
 
 An update is installed beside existing versions after download confirmation and staged for a user-confirmed restart; a candidate becomes active only after its Web page loads and remains live for 30 seconds, a failed launch leaves the active version unchanged, two failures reject the pending candidate, and the user can explicitly swap active and previous versions. Upstream synchronization and publication are unattended, but a background client check cannot consume bandwidth or interrupt active work without consent.
 
-The host launches only the bundled runtime Node, accepts only a declared `http://127.0.0.1` URL with the Web shell marker, contains renderer navigation to that origin, and waits for the exact child process tree and log stream to settle before exit or relaunch.
+The host launches only the bundled runtime Node with `--no-open`, accepts only a declared `http://127.0.0.1` URL with the Web shell marker, contains renderer navigation to that origin, and waits for the exact child process tree and log stream to settle before exit or relaunch. A runtime that predates browser launching also predates `--no-open`, so the host retries without the option only after that exact option is rejected. The main process denies every popup request and cross-origin top-level navigation; the sandboxed preload forwards an external HTTP(S) target only after a trusted user activation, and the main process revalidates its sender and URL before opening the default browser.
 
 ## Verification
 
-Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, direct signed-asset verification, update diagnostics, version-field mapping, dialog and clipboard text, close interception, explicit-exit pass-through, and window restoration. Workflow tests pin the six-hour schedule, merge-only branch updates, exact `master` source commit, automatic revision selection, secret-free build, protected checkout-free signing, publication dependency, and desktop package, tag, and prerelease alignment. The packaged desktop smoke requires the native About item, closes the real BrowserWindow, and fails unless the real Tray retains it before process and log quiescence.
+Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, direct signed-asset verification, update diagnostics, version-field mapping, dialog and clipboard text, close interception, explicit-exit pass-through, window restoration, runtime `--no-open`, and trusted external-link filtering. Workflow tests pin the six-hour schedule, merge-only branch updates, exact `master` source commit, automatic revision selection, secret-free build, protected checkout-free signing, publication dependency, and desktop package, tag, and prerelease alignment. The packaged desktop smoke requires the native About item, proves the runtime did not request a browser and a scripted external popup is denied, closes the real BrowserWindow, and fails unless the real Tray retains it before process and log quiescence.
 
 ## Alternatives considered
 
@@ -88,6 +88,8 @@ Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, dir
 
 **Render desktop version information in the ordinary Web settings page.** Rejected because the same Web profile runs outside Electron, while the selected runtime manifest and shell version are native-host data. The native application menu exposes them without adding a privileged Electron API to the page.
 
+**Open every renderer-requested HTTP(S) popup in the default browser.** Rejected because startup code and page scripts can request navigation without user intent. Fixed popup denial plus a trusted-activation path keeps external browsing explicit.
+
 ## Consequences
 
 Official Harness advances can produce a verified fork release without manual synchronization or packaging, independently of the shell. First launch still works from an offline seed, and the host retains one last-known-good runtime for automatic or manual rollback.
@@ -103,6 +105,8 @@ The signing private key becomes release infrastructure: it must remain outside t
 Full archives cost more download and disk than deltas, and the first seed install must unpack a production dependency tree; the hoisted symlink-free layout limits that cost without changing the runtime closure.
 
 The personal MVP has no Authenticode identity, so Windows may warn about the installer even though runtime content is cryptographically authenticated.
+
+Only an explicit external-link activation leaves the desktop window. A page that needs to open a browser without user activation gives up that behavior.
 
 Hiding the main window keeps the runtime process and its memory resident until the user selects an explicit exit. A one-shot tray notification makes that persistence visible without interrupting every close.
 

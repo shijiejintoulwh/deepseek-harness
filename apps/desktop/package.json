@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "1.0.4-preview.1",
+  "version": "1.0.4-preview.3",
   "private": true,
   "description": "Windows Electron host for an independently updatable DeepSeek Harness runtime",
   "type": "module",
@@ -8,10 +8,11 @@
   "scripts": {
     "build": "tsc -b && tsdown && tsdown --config tsdown.preload.config.ts",
     "dev": "pnpm run build && electron .",
-    "dist": "pnpm run build && electron-builder --win nsis --x64 --config electron-builder.yml"
+    "dist": "pnpm run build && electron-builder --win nsis --x64 --config electron-builder.yml --publish never"
   },
   "dependencies": {
     "@deepseek-ai/dsh-atomic-write": "workspace:^",
+    "electron-updater": "6.8.9",
     "extract-zip": "2.0.1",
     "semver": "7.8.5",
     "zod": "^4.4.3"

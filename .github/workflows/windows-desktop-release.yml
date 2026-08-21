@@ -3,45 +3,99 @@ name: Windows desktop installer
 on:
   workflow_dispatch:
     inputs:
-      runtime-tag:
-        description: Signed runtime-v* release bundled for offline first launch.
+      source-ref:
+        description: Reviewed source ref to package.
         required: true
+        type: string
+        default: dev-windesktop
+      runtime-tag:
+        description: Optional signed runtime-v* seed override; the reviewed release config is the default.
+        required: false
         type: string
       desktop-tag:
-        description: desktop-v* tag created only when publish is enabled.
+        description: Exact desktop-v* tag matching the package version.
         required: true
         type: string
-        default: desktop-v1.0.4-preview.1
-      prerelease:
-        description: Mark the GitHub Release as a preview instead of the latest stable desktop release.
-        required: true
-        type: boolean
-        default: true
+        default: desktop-v1.0.4-preview.3
       publish:
-        description: Publish a desktop-v* GitHub Release for manual shell upgrades.
+        description: Sign and publish the desktop update release.
         required: true
         type: boolean
         default: false
+  push:
+    tags:
+      - desktop-v*
 
 permissions:
   contents: read
 
 concurrency:
-  group: windows-desktop-${{ github.ref }}
+  group: windows-desktop-release
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build assisted NSIS installer
+    name: Build and validate unsigned desktop update
     runs-on: windows-2025
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
+      desktop-tag: ${{ steps.release.outputs.desktop-tag }}
+      runtime-tag: ${{ steps.release.outputs.runtime-tag }}
+      source-sha: ${{ steps.release.outputs.source-sha }}
+      installer: ${{ steps.release.outputs.installer }}
+      blockmap: ${{ steps.release.outputs.blockmap }}
+      metadata: ${{ steps.release.outputs.metadata }}
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: dev-windesktop
+          ref: ${{ github.event_name == 'push' && github.ref || inputs.source-ref }}
           persist-credentials: false
 
+      - name: Resolve immutable desktop release inputs
+        id: release
+        shell: pwsh
+        env:
+          DISPATCH_DESKTOP_TAG: ${{ inputs.desktop-tag }}
+          DISPATCH_RUNTIME_TAG: ${{ inputs.runtime-tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_TAG: ${{ github.ref_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $package = Get-Content -Raw -LiteralPath 'apps/desktop/package.json' | ConvertFrom-Json
+          $config = Get-Content -Raw -LiteralPath 'scripts/desktop-release/release-config.json' | ConvertFrom-Json
+          $version = [string]$package.version
+          if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-preview\.(0|[1-9]\d*))?$') {
+            throw 'desktop package version must be stable SemVer or x.y.z-preview.n.'
+          }
+          $channel = if ($version.Contains('-preview.')) { 'preview' } else { 'stable' }
+          $expectedTag = "desktop-v$version"
+          $desktopTag = if ($env:EVENT_NAME -eq 'push') { $env:PUSH_TAG } else { $env:DISPATCH_DESKTOP_TAG }
+          if ($desktopTag -ne $expectedTag) { throw "desktop tag $desktopTag must equal $expectedTag." }
+          $runtimeTag = if ([string]::IsNullOrWhiteSpace($env:DISPATCH_RUNTIME_TAG)) {
+            [string]$config.seedRuntimeTag
+          } else {
+            $env:DISPATCH_RUNTIME_TAG
+          }
+          if ($runtimeTag -notmatch '^runtime-v[0-9A-Za-z][0-9A-Za-z.+-]*-r[1-9]\d*$') {
+            throw 'runtime tag must be an immutable runtime-v*-rN release.'
+          }
+          $sourceSha = (git rev-parse HEAD).Trim()
+          if ($sourceSha -notmatch '^[0-9a-f]{40}$') { throw 'source checkout did not resolve to one commit.' }
+          $installer = "DeepSeek-Harness-Desktop-$version-win-x64.exe"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "channel=$channel" >> $env:GITHUB_OUTPUT
+          "desktop-tag=$desktopTag" >> $env:GITHUB_OUTPUT
+          "runtime-tag=$runtimeTag" >> $env:GITHUB_OUTPUT
+          "source-sha=$sourceSha" >> $env:GITHUB_OUTPUT
+          "installer=$installer" >> $env:GITHUB_OUTPUT
+          "blockmap=$installer.blockmap" >> $env:GITHUB_OUTPUT
+          "metadata=$(if ($channel -eq 'preview') { 'preview.yml' } else { 'latest.yml' })" >> $env:GITHUB_OUTPUT
+
       - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm
 
       - uses: actions/setup-node@v6
         with:
@@ -55,22 +109,22 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          RUNTIME_TAG: ${{ inputs.runtime-tag }}
+          GH_REPO: ${{ github.repository }}
+          RUNTIME_TAG: ${{ steps.release.outputs.runtime-tag }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:RUNTIME_TAG)) {
-            throw 'runtime-tag is required for an offline installer.'
-          }
+          $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Path 'dist-desktop/runtime' | Out-Null
-          gh release download $env:RUNTIME_TAG --dir 'dist-desktop/runtime' --pattern 'runtime-manifest.*' --pattern 'deepseek-harness-runtime-win32-x64-*.zip'
+          gh release download $env:RUNTIME_TAG --repo $env:GH_REPO --dir 'dist-desktop/runtime' --pattern 'runtime-manifest.*' --pattern 'deepseek-harness-runtime-win32-x64-*.zip'
           pnpm exec tsx scripts/runtime-release/prepare-desktop-seed.ts --from dist-desktop/runtime
 
-      - name: Build installer
+      - name: Build installer and electron-updater metadata
         shell: pwsh
         run: pnpm run desktop:dist
 
       - name: Smoke test packaged desktop and seed runtime
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $smoke = Join-Path $env:RUNNER_TEMP 'desktop-smoke'
           $env:APPDATA = Join-Path $smoke 'AppData\Roaming'
           $env:LOCALAPPDATA = Join-Path $smoke 'AppData\Local'
@@ -84,37 +138,133 @@ jobs:
             throw "Packaged desktop smoke test exited with $($process.ExitCode)."
           }
 
+      - name: Assemble strict unsigned release set
+        shell: pwsh
+        env:
+          BLOCKMAP: ${{ steps.release.outputs.blockmap }}
+          INSTALLER: ${{ steps.release.outputs.installer }}
+          METADATA: ${{ steps.release.outputs.metadata }}
+          SOURCE_SHA: ${{ steps.release.outputs.source-sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = 'dist-desktop/release'
+          New-Item -ItemType Directory -Path $release | Out-Null
+          foreach ($name in @($env:INSTALLER, $env:BLOCKMAP)) {
+            $source = Join-Path 'dist-desktop' $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "desktop builder did not produce $name." }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $release $name)
+          }
+          $builderMetadata = 'dist-desktop/latest.yml'
+          if (-not (Test-Path -LiteralPath $builderMetadata -PathType Leaf)) { throw 'desktop builder did not produce latest.yml.' }
+          Copy-Item -LiteralPath $builderMetadata -Destination (Join-Path $release $env:METADATA)
+          pnpm exec tsx scripts/desktop-release/generate-manifest.ts --directory $release --version $env:VERSION --source-commit $env:SOURCE_SHA
+
       - uses: actions/upload-artifact@v7
         with:
-          name: deepseek-harness-desktop-installer
-          path: dist-desktop/*.exe
+          name: deepseek-harness-desktop-update
+          path: dist-desktop/release/*
           if-no-files-found: error
           retention-days: 14
 
   publish:
-    name: Publish desktop installer
-    if: inputs.publish
+    name: Validate, sign, and publish desktop-v release
+    if: github.event_name == 'push' || inputs.publish
     needs: build
-    runs-on: windows-2025
+    runs-on: ubuntu-latest
     environment: desktop-release
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v7
         with:
-          name: deepseek-harness-desktop-installer
-          path: dist-desktop
+          name: deepseek-harness-desktop-update
+          path: dist-desktop/release
 
-      - name: Create manual shell-upgrade release
-        shell: pwsh
+      - name: Verify exact desktop assets and sign exact manifest bytes
         env:
+          DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM: ${{ secrets.DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM }}
+          EXPECTED_CHANNEL: ${{ needs.build.outputs.channel }}
+          EXPECTED_METADATA: ${{ needs.build.outputs.metadata }}
+          EXPECTED_SOURCE_SHA: ${{ needs.build.outputs.source-sha }}
+          EXPECTED_TAG: ${{ needs.build.outputs.desktop-tag }}
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+        run: >-
+          node --input-type=module -e "import { createHash, createPrivateKey, sign } from 'node:crypto';
+          import { basename, join } from 'node:path'; import { lstatSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+          const root = 'dist-desktop/release'; const manifestPath = join(root, 'desktop-update-manifest.json');
+          if (lstatSync(manifestPath).size > 65536) throw new Error('desktop manifest is too large'); const bytes = readFileSync(manifestPath); const manifest = JSON.parse(bytes.toString('utf8'));
+          const expectedKeys = ['arch', 'asset', 'blockmap', 'channel', 'platform', 'publishedAt', 'schemaVersion', 'sha256', 'size', 'sourceCommit', 'version'].sort();
+          const expectedFileKeys = ['asset', 'sha256', 'size'].sort();
+          if (JSON.stringify(Object.keys(manifest).sort()) !== JSON.stringify(expectedKeys)) throw new Error('desktop manifest fields are invalid');
+          if (typeof manifest.blockmap !== 'object' || manifest.blockmap === null || Array.isArray(manifest.blockmap) || JSON.stringify(Object.keys(manifest.blockmap).sort()) !== JSON.stringify(expectedFileKeys)) throw new Error('desktop blockmap fields are invalid');
+          if (manifest.schemaVersion !== 1 || manifest.platform !== 'win32' || manifest.arch !== 'x64') throw new Error('desktop manifest target is invalid');
+          if (manifest.version !== process.env.EXPECTED_VERSION || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-preview\.(0|[1-9]\d*))?$/.test(manifest.version)) throw new Error('desktop manifest version is invalid');
+          const derivedChannel = manifest.version.includes('-preview.') ? 'preview' : 'stable';
+          if (manifest.channel !== derivedChannel || manifest.channel !== process.env.EXPECTED_CHANNEL) throw new Error('desktop release channel is invalid');
+          if ('desktop-v' + manifest.version !== process.env.EXPECTED_TAG) throw new Error('desktop release tag is invalid');
+          if (manifest.sourceCommit !== process.env.EXPECTED_SOURCE_SHA || !/^[0-9a-f]{40}$/.test(manifest.sourceCommit)) throw new Error('desktop source commit is invalid');
+          if (typeof manifest.publishedAt !== 'string' || new Date(manifest.publishedAt).toISOString() !== manifest.publishedAt) throw new Error('desktop publishedAt is invalid');
+          const expectedAsset = 'DeepSeek-Harness-Desktop-' + manifest.version + '-win-x64.exe'; const expectedBlockmap = expectedAsset + '.blockmap';
+          const validateFile = (file, asset) => { if (file.asset !== asset || basename(file.asset) !== file.asset || !Number.isInteger(file.size) || file.size < 1 || !/^[0-9a-f]{64}$/.test(file.sha256)) throw new Error('desktop file metadata is invalid'); };
+          validateFile(manifest, expectedAsset); validateFile(manifest.blockmap, expectedBlockmap);
+          const expectedMetadata = derivedChannel === 'preview' ? 'preview.yml' : 'latest.yml'; if (expectedMetadata !== process.env.EXPECTED_METADATA) throw new Error('desktop metadata channel filename is invalid');
+          const expectedFiles = [expectedAsset, expectedBlockmap, expectedMetadata, 'desktop-update-manifest.json'].sort();
+          if (JSON.stringify(readdirSync(root).sort()) !== JSON.stringify(expectedFiles)) throw new Error('unsigned desktop artifact contains missing or unexpected files');
+          const measure = (asset, maximum) => { const path = join(root, asset); const info = lstatSync(path); if (info.isSymbolicLink() || !info.isFile() || info.size > maximum) throw new Error('desktop release asset is not a bounded regular file'); const data = readFileSync(path); return { size: data.length, sha256: createHash('sha256').update(data).digest('hex'), sha512: createHash('sha512').update(data).digest('base64') }; };
+          const installer = measure(expectedAsset, 1073741824); const blockmap = measure(expectedBlockmap, 67108864);
+          if (installer.size !== manifest.size || installer.sha256 !== manifest.sha256 || blockmap.size !== manifest.blockmap.size || blockmap.sha256 !== manifest.blockmap.sha256) throw new Error('desktop release files do not match their manifest');
+          const metadataPath = join(root, expectedMetadata); if (lstatSync(metadataPath).size > 1048576) throw new Error('desktop update metadata is too large'); const metadata = readFileSync(metadataPath, 'utf8').replaceAll('\r\n', '\n'); const metadataVersion = metadata.match(/^version: (.+)$/m)?.[1];
+          if (metadataVersion !== manifest.version) throw new Error('desktop update metadata version is invalid');
+          const urls = [...metadata.matchAll(/^\s*-\s*url:\s*(\S+)\s*$/gm)].map(match => match[1].trim());
+          if (urls.length !== 1 || urls[0] !== expectedAsset || !metadata.includes('sha512: ' + installer.sha512) || !metadata.includes('size: ' + installer.size)) throw new Error('desktop update metadata does not match the installer');
+          const canonical = Buffer.from(JSON.stringify(manifest, null, 2) + '\n'); if (!bytes.equals(canonical)) throw new Error('desktop manifest bytes are not canonical');
+          const pem = process.env.DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM; if (!pem) throw new Error('DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM is not configured');
+          const key = createPrivateKey(pem); if (key.asymmetricKeyType !== 'ed25519') throw new Error('desktop update signing key must be Ed25519');
+          writeFileSync(join(root, 'desktop-update-manifest.sig'), sign(null, bytes, key).toString('base64') + '\n', { flag: 'wx', mode: 0o600 });"
+
+      - name: Create immutable desktop update release
+        shell: bash
+        env:
+          EXPECTED_CHANNEL: ${{ needs.build.outputs.channel }}
+          EXPECTED_METADATA: ${{ needs.build.outputs.metadata }}
+          EXPECTED_SOURCE_SHA: ${{ needs.build.outputs.source-sha }}
+          EXPECTED_TAG: ${{ needs.build.outputs.desktop-tag }}
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          $tag = '${{ inputs.desktop-tag }}'
-          if ($tag -notlike 'desktop-v*') { throw 'desktop-tag must start with desktop-v.' }
-          $releaseFlags = @()
-          if ('${{ inputs.prerelease }}' -eq 'true') {
-            $releaseFlags += '--prerelease'
-          }
-          gh release create $tag dist-desktop/*.exe --target dev-windesktop --title $tag --notes 'Windows desktop shell installer. Harness updates independently in the application.' @releaseFlags
+          set -euo pipefail
+          if gh release view "$EXPECTED_TAG" --repo "$GH_REPO" >/dev/null 2>&1; then
+            echo "desktop release already exists: $EXPECTED_TAG" >&2
+            exit 1
+          fi
+          if ref_json=$(gh api "repos/$GH_REPO/git/ref/tags/$EXPECTED_TAG" 2>/dev/null); then
+            object_type=$(jq -r '.object.type' <<<"$ref_json")
+            object_sha=$(jq -r '.object.sha' <<<"$ref_json")
+            while [[ "$object_type" == tag ]]; do
+              tag_json=$(gh api "repos/$GH_REPO/git/tags/$object_sha")
+              object_type=$(jq -r '.object.type' <<<"$tag_json")
+              object_sha=$(jq -r '.object.sha' <<<"$tag_json")
+            done
+            if [[ "$object_type" != commit || "$object_sha" != "$EXPECTED_SOURCE_SHA" ]]; then
+              echo "desktop tag does not resolve to the packaged source commit" >&2
+              exit 1
+            fi
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref="refs/tags/$EXPECTED_TAG" -f sha="$EXPECTED_SOURCE_SHA" >/dev/null
+          fi
+          installer="DeepSeek-Harness-Desktop-$EXPECTED_VERSION-win-x64.exe"
+          flags=()
+          if [[ "$EXPECTED_CHANNEL" == preview ]]; then flags+=(--prerelease); fi
+          gh release create "$EXPECTED_TAG" \
+            "dist-desktop/release/$installer" \
+            "dist-desktop/release/$installer.blockmap" \
+            "dist-desktop/release/$EXPECTED_METADATA" \
+            'dist-desktop/release/desktop-update-manifest.json' \
+            'dist-desktop/release/desktop-update-manifest.sig' \
+            --repo "$GH_REPO" \
+            --verify-tag \
+            --title "$EXPECTED_TAG" \
+            --notes 'Windows desktop shell update. The detached Ed25519 signature covers desktop-update-manifest.json; Harness runtime updates remain independent.' \
+            "${flags[@]}"

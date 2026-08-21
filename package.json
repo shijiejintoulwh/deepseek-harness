@@ -182,6 +182,7 @@
     "tsdown": "^0.22.2",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
+    "unrun": "0.3.0",
     "vite-tsconfig-paths": "^6.1.1",
     "vitest": "^4.1.8"
   }

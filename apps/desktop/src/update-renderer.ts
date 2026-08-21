@@ -1,11 +1,11 @@
 /** Renderer for the sandboxed Harness update progress window. */
 
-import type { RuntimeUpdateProgress } from './updater.ts'
+import type { UpdateProgressPresentation } from './progress-window.ts'
 
 declare global {
   interface Window {
     /** Render a trusted progress event supplied by the main process. */
-    renderUpdateProgress: (progress: RuntimeUpdateProgress) => void
+    renderUpdateProgress: (progress: UpdateProgressPresentation) => void
   }
 }
 
@@ -17,23 +17,18 @@ if (status === null || detail === null || progressBar === null) {
 }
 
 window.renderUpdateProgress = (progress): void => {
-  if (progress.phase === 'downloading') {
-    const percent = Math.floor(progress.progress.received / progress.progress.total * 100)
-    status.textContent = '正在下载 Harness 运行时'
-    detail.textContent = `${percent}%`
+  status.textContent = progress.status
+  detail.textContent = progress.detail
+  if (progress.phase === 'progress') {
     progressBar.removeAttribute('indeterminate')
-    progressBar.value = percent
+    progressBar.value = Math.floor(progress.fraction * 100)
     return
   }
-  if (progress.phase === 'verifying') {
-    status.textContent = '正在验证签名并安装'
-    detail.textContent = '当前版本仍可继续回滚'
+  if (progress.phase === 'indeterminate') {
     progressBar.removeAttribute('value')
     progressBar.setAttribute('indeterminate', '')
     return
   }
-  status.textContent = '更新已准备完成'
-  detail.textContent = progress.runtimeId
   progressBar.removeAttribute('indeterminate')
   progressBar.value = 100
 }

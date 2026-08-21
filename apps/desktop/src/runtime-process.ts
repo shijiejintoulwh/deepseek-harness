@@ -11,6 +11,11 @@ import { setTimeout as delay } from 'node:timers/promises'
 
 type RuntimeChild = ChildProcessByStdio<null, Readable, Readable>
 
+const unsupportedNoOpenOption = /error: unknown option ['"]--no-open['"]/
+
+/** Internal signal that the installed runtime predates browser suppression. */
+class UnsupportedNoOpenOptionError extends Error {}
+
 /** Independent process-exit facts. */
 export interface RuntimeExit {
   /** Exit status, or null when a signal ended the process. */
@@ -167,7 +172,10 @@ export class RunningRuntime {
  * @param options - runtime paths, homes, timeout, and log sink.
  * @returns Healthy live runtime.
  */
-export async function launchRuntime(options: RuntimeLaunchOptions): Promise<RunningRuntime> {
+async function launchRuntimeAttempt(
+  options: RuntimeLaunchOptions,
+  suppressBrowser: boolean,
+): Promise<RunningRuntime> {
   const node = join(options.runtimeDirectory, 'node', process.platform === 'win32' ? 'node.exe' : 'node')
   const entry = join(options.runtimeDirectory, 'app', 'lib', 'bin.js')
   const environment = { ...process.env }
@@ -176,7 +184,9 @@ export async function launchRuntime(options: RuntimeLaunchOptions): Promise<Runn
   environment.DSH_HOME = options.harnessHome
   environment.DSH_AGENTS_HOME = options.agentsHome
 
-  const child = spawn(node, [entry, 'web', '--host', '127.0.0.1', '--port', '0'], {
+  const runtimeArguments = [entry, 'web', '--host', '127.0.0.1', '--port', '0']
+  if (suppressBrowser) runtimeArguments.push('--no-open')
+  const child = spawn(node, runtimeArguments, {
     cwd: join(options.runtimeDirectory, 'app'),
     env: environment,
     windowsHide: true,
@@ -200,10 +210,14 @@ export async function launchRuntime(options: RuntimeLaunchOptions): Promise<Runn
     resolveUrl = resolve
     rejectUrl = reject
   })
+  let stderrTail = ''
   try {
     observeLines(
       child,
-      options.onOutput,
+      (stream, text) => {
+        if (stream === 'stderr') stderrTail = (stderrTail + text).slice(-4_096)
+        options.onOutput?.(stream, text)
+      },
       (line) => {
         try {
           const url = parseRuntimeUrl(line)
@@ -231,6 +245,25 @@ export async function launchRuntime(options: RuntimeLaunchOptions): Promise<Runn
       child.kill()
       await Promise.race([done, delay(5_000)])
     }
+    if (suppressBrowser && unsupportedNoOpenOption.test(stderrTail)) {
+      throw new UnsupportedNoOpenOptionError('Harness runtime does not support --no-open', { cause: error })
+    }
     throw error
+  }
+}
+
+/**
+ * Start an installed Harness runtime without opening a separate browser.
+ * Runtimes that predate browser launching also predate `--no-open`; retry only
+ * when that exact option is rejected.
+ * @param options - runtime paths, homes, timeout, and log sink.
+ * @returns Healthy live runtime.
+ */
+export async function launchRuntime(options: RuntimeLaunchOptions): Promise<RunningRuntime> {
+  try {
+    return await launchRuntimeAttempt(options, true)
+  } catch (error) {
+    if (!(error instanceof UnsupportedNoOpenOptionError)) throw error
+    return launchRuntimeAttempt(options, false)
   }
 }

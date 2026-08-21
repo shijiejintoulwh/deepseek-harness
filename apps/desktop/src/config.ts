@@ -10,6 +10,12 @@ export const RUNTIME_RELEASE_REPOSITORY = 'shijiejintoulwh/deepseek-harness'
 /** Prefix separating Harness runtime releases from desktop installer releases. */
 export const RUNTIME_RELEASE_TAG_PREFIX = 'runtime-v'
 
+/** GitHub repository that publishes reviewed desktop shell releases. */
+export const DESKTOP_RELEASE_REPOSITORY = 'shijiejintoulwh/deepseek-harness'
+
+/** Prefix separating desktop installer releases from other repository releases. */
+export const DESKTOP_RELEASE_TAG_PREFIX = 'desktop-v'
+
 /** Update protocol implemented by this desktop host. */
 export const DESKTOP_PROTOCOL_VERSION = 1
 
@@ -29,5 +35,14 @@ export const RUNTIME_START_TIMEOUT_MS = 30_000
  */
 export const RUNTIME_MANIFEST_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAIWLIQuMcNKNYTLaEC6cKhctUebll+Vf3YTMyAT13uV0=
+-----END PUBLIC KEY-----
+`
+
+/**
+ * Ed25519 public key dedicated to desktop update manifests. Its private key
+ * remains outside the repository in the protected desktop-release environment.
+ */
+export const DESKTOP_UPDATE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAgZawE9R9NoQ76IpMGoBNsZcKcbQ55zGsAn9XLvhOluM=
 -----END PUBLIC KEY-----
 `

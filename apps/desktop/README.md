@@ -10,7 +10,7 @@ The host owns installation, runtime selection, process supervision, native promp
 
 Desktop source and installer releases live on `dev-windesktop` under `desktop-v*` tags, while verified Harness runtime releases are built from `master` under immutable `runtime-v<harnessVersion>-r<revision>` tags in `shijiejintoulwh/deepseek-harness`.
 
-Preview shell versions use the same SemVer prerelease suffix in the desktop package and `desktop-v*` tag, and the release dispatch explicitly marks them as GitHub prereleases so they do not replace the latest stable desktop release.
+Preview shell versions use the same SemVer prerelease suffix in the desktop package and `desktop-v*` tag. Preview and stable releases publish separate Electron update channels, so a preview release cannot replace stable channel metadata or become the latest stable desktop release.
 
 The desktop package is private and deliberately excluded from the npm dsh release family.
 
@@ -19,6 +19,8 @@ The [upstream sync workflow](../../.github/workflows/sync-upstream-runtime.yml) 
 Automatic operation requires both workflow files on the default branch, GitHub Actions workflow permissions set to read and write, and `RUNTIME_SIGNING_PRIVATE_KEY_PEM` in the `runtime-release` environment. Required reviewers on that environment intentionally turn signing back into a manual approval step.
 
 The runtime workflow emits one self-contained Windows x64 ZIP, `runtime-manifest.json`, and an Ed25519 detached signature; the manifest binds the Harness version, packaging revision, source commit, Node version, archive size, SHA-256 digest, minimum desktop version, and desktop protocol version.
+
+The desktop workflow publishes the NSIS installer, its blockmap, one channel file (`latest.yml` for stable or `preview.yml` for preview), `desktop-update-manifest.json`, and an Ed25519 detached signature. The signed desktop manifest binds the shell version, channel, source commit, installer and blockmap names, sizes, and SHA-256 digests; the protected publication job rejects a mismatched or incomplete release set.
 
 The desktop installer bundles one verified release set as an offline seed, so first launch does not depend on GitHub availability.
 
@@ -36,9 +38,17 @@ Closing the main window hides it in the Windows notification area while the Harn
 
 On first launch, the host offers to copy an existing CLI Harness home into the desktop-specific home without modifying the source. Rebuildable `node_modules` trees are omitted instead of following package-manager junctions, and every link outside those dependency trees is rejected. An empty home left by an interrupted import can be retried directly; if desktop data already exists, the host offers once to preserve it as a sibling backup before importing and automatically restores it if the replacement import fails.
 
-The host starts the selected runtime with its bundled Node 24 executable, accepts only the announced `http://127.0.0.1` origin, waits for the real Web shell health marker, and waits for the child process and log stream to settle before exit or relaunch.
+The host starts the selected runtime with its bundled Node 24 executable and an explicit `--no-open`, accepts only the announced `http://127.0.0.1` origin, waits for the real Web shell health marker, and waits for the child process and log stream to settle before exit or relaunch. A runtime that predates browser launching also predates that option, so the host retries without it only after the runtime rejects the exact `--no-open` option.
+
+Startup never opens the system browser. Automatic popups and cross-origin top-level navigation are denied; only a trusted user activation on an external HTTP(S) link is handed to the default browser, and the main process revalidates the sender and URL before opening it.
 
 At startup the host checks the latest `runtime-v*` release, prompts before downloading, verifies the Ed25519 signature before parsing metadata, enforces compatibility, verifies size and SHA-256, rejects unsafe ZIP paths and links, and installs into a fresh version directory before staging it for restart. Discovery prefers the anonymous GitHub REST feed; when GitHub reports a rate limit, the host honors its reset time and uses the public Releases Atom feed with direct signed-asset URLs instead of repeating the blocked REST request. If both discovery paths are unavailable, a manual check reports an estimated retry interval while the automatic check remains silent.
+
+The independent `ShellUpdater` checks the desktop channel selected by the installed shell version. Stable builds accept only a higher stable version; preview builds may accept a higher preview or stable version, and neither channel permits an automatic downgrade. A background check remains silent when no update is available, while `帮助` > `检查桌面端更新` reports the result of a manual check.
+
+Finding a shell release does not start a download. The host asks before `electron-updater` downloads the NSIS release, verifies the desktop manifest signature and the downloaded installer and blockmap against their signed sizes and SHA-256 digests, then offers `重启并更新`. The install action stops the Harness process and log stream through the normal quiescent shutdown path before handing the verified package to NSIS; an ordinary application exit never installs a pending shell release implicitly.
+
+Shell download and Harness runtime download are mutually exclusive. A shell update replaces only the Electron installation files: `%APPDATA%` user data, the desktop-specific Harness home, `%LOCALAPPDATA%` runtime versions, and runtime rollback state remain outside the installation directory and are not replaced.
 
 Upstream synchronization and release publication are unattended; installation on a personal machine keeps the existing download and restart confirmations so a background check cannot consume bandwidth or interrupt active work without consent.
 
@@ -56,6 +66,12 @@ Generate the signing pair once into the ignored local directory, then embed the 
 pnpm exec tsx scripts/runtime-release/generate-signing-key.ts --out .desktop-local/runtime-signing
 ```
 
+Generate the independent desktop-update signing pair into the ignored shell directory. Embed `desktop-update-public.pem` in [`src/config.ts`](src/config.ts) and protect `desktop-update-private.pem` as the `DESKTOP_UPDATE_SIGNING_PRIVATE_KEY_PEM` secret in the `desktop-release` GitHub environment; the generator refuses to replace either key:
+
+```powershell
+pnpm exec tsx scripts/desktop-release/generate-signing-key.ts --out .desktop-local/shell-signing
+```
+
 From a built Windows x64 checkout using Node 24, create and verify the release set, copy it as the offline seed, and package the installer:
 
 ```powershell
@@ -68,9 +84,9 @@ pnpm run desktop:dist
 
 ## Current limits
 
-The personal MVP has no Authenticode identity; Windows may therefore show an untrusted-publisher warning even though every Harness runtime is independently authenticated by the embedded Ed25519 key and SHA-256 digest.
+The personal MVP has no Authenticode identity; Windows may therefore show an untrusted-publisher warning even though Harness runtime and desktop release artifacts are independently authenticated by embedded Ed25519 keys and SHA-256 digests.
 
-Only full self-contained runtime archives are supported; delta updates and automatic Electron-shell updates are deferred.
+Harness runtime updates remain full self-contained archives. Electron may use the published NSIS blockmap for transfer efficiency, but the shell-update MVP has no automatic shell rollback: a download or verification failure keeps the current shell running, and an installer failure is retried explicitly.
 
 ## Community links
 

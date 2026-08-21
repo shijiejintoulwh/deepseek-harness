@@ -1,6 +1,8 @@
 appId: ai.deepseek.harness.desktop
 productName: DeepSeek Harness Desktop
 asar: true
+detectUpdateChannel: true
+generateUpdatesFilesForAllChannels: false
 directories:
   output: ../../dist-desktop
   buildResources: build
@@ -32,4 +34,11 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
+  differentialPackage: true
   artifactName: DeepSeek-Harness-Desktop-${version}-win-x64.${ext}
+publish:
+  provider: github
+  owner: shijiejintoulwh
+  repo: deepseek-harness
+  tagNamePrefix: desktop-v
+  releaseType: release

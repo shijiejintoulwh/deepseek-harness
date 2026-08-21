@@ -9,6 +9,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { finished } from 'node:stream/promises'
 import { setTimeout as delay } from 'node:timers/promises'
+import { prerelease } from 'semver'
 import {
   app,
   BrowserWindow,
@@ -24,6 +25,9 @@ import {
 } from 'electron'
 import {
   DESKTOP_PROTOCOL_VERSION,
+  DESKTOP_RELEASE_REPOSITORY,
+  DESKTOP_RELEASE_TAG_PREFIX,
+  DESKTOP_UPDATE_PUBLIC_KEY_PEM,
   MAX_PENDING_LAUNCH_FAILURES,
   PENDING_RUNTIME_STABILITY_MS,
   RUNTIME_MANIFEST_PUBLIC_KEY_PEM,
@@ -31,6 +35,13 @@ import {
   RUNTIME_RELEASE_TAG_PREFIX,
   RUNTIME_START_TIMEOUT_MS,
 } from './config.ts'
+import { GitHubDesktopReleaseSource } from './desktop-release-source.ts'
+import {
+  readInstalledShellManifestSha256,
+  writeInstalledShellIdentity,
+} from './desktop-update-state.ts'
+import { ElectronUpdaterAdapter } from './electron-updater-adapter.ts'
+import { EXTERNAL_LINK_CHANNEL, externalHttpUrl } from './external-navigation.ts'
 import { GitHubRuntimeProvider } from './github-provider.ts'
 import {
   canBackupHarnessHome,
@@ -39,7 +50,7 @@ import {
   legacyHarnessHome,
   pathExists,
 } from './home-import.ts'
-import { UpdateProgressWindow } from './progress-window.ts'
+import { UpdateProgressWindow, type UpdateProgressPresentation } from './progress-window.ts'
 import { launchRuntime, type RunningRuntime } from './runtime-process.ts'
 import {
   commitPendingRuntime,
@@ -51,10 +62,16 @@ import {
   type RuntimeState,
 } from './runtime-model.ts'
 import { RuntimeStore } from './runtime-store.ts'
+import {
+  ShellUpdater,
+  type AvailableShellUpdate,
+  type ShellUpdateChannel,
+  type ShellUpdateState,
+} from './shell-updater.ts'
 import { parseShellThemeReport, shellBackgroundColor, SHELL_THEME_CHANNEL } from './shell-theme.ts'
 import { installCloseToTray, showTrayWindow } from './tray-lifecycle.ts'
 import { describeUpdateFailure } from './update-error.ts'
-import { RuntimeUpdater, type RuntimeUpdateCheck } from './updater.ts'
+import { RuntimeUpdater, type RuntimeUpdateCheck, type RuntimeUpdateProgress } from './updater.ts'
 import {
   createDesktopVersionInfo,
   type DesktopVersionInfo,
@@ -64,6 +81,7 @@ import {
 
 const PRODUCT_DIRECTORY = 'DeepSeekHarnessDesktop'
 const HOME_IMPORT_DECISION = 'home-import-decision-v1.json'
+const INSTALLED_SHELL_IDENTITY = 'installed-shell-v1.json'
 const SHELL_THEME_START_TIMEOUT_MS = 5_000
 const SESSION_END_CLOSE_WINDOW_MS = 30_000
 const originalEnvironment = { ...process.env }
@@ -82,14 +100,17 @@ let mainWindow: BrowserWindow | null = null
 let runningRuntime: RunningRuntime | null = null
 let runtimeStore: RuntimeStore | null = null
 let runtimeUpdater: RuntimeUpdater | null = null
+let shellUpdater: ShellUpdater | null = null
 let runtimeState: RuntimeState | null = null
 let runtimeLog: WriteStream | null = null
 let desktopTray: Tray | null = null
 let removeCloseToTray: (() => void) | null = null
+let removeSessionEndListener: (() => void) | null = null
 let sessionEndReset: ReturnType<typeof setTimeout> | null = null
 let sessionEnding = false
 let quitting = false
 let updateInProgress = false
+let runtimeRequestedBrowserOpen = false
 
 /** Return a Windows local-data root without making the install directory writable. */
 function localDataRoot(): string {
@@ -98,8 +119,24 @@ function localDataRoot(): string {
   return resolve(local === undefined || local === '' ? app.getPath('userData') : local, PRODUCT_DIRECTORY)
 }
 
+/** Private desktop state file that binds an installed version to signed bytes. */
+function installedShellIdentityPath(): string {
+  return join(app.getPath('userData'), 'shell-update', INSTALLED_SHELL_IDENTITY)
+}
+
+/** Private directory for blockmaps retained until explicit installation. */
+function shellUpdateDownloadDirectory(): string {
+  return join(app.getPath('userData'), 'shell-update', 'downloads')
+}
+
+/** Select the desktop release channel from the packaged semantic version. */
+function installedShellChannel(version: string): ShellUpdateChannel {
+  return prerelease(version) === null ? 'stable' : 'preview'
+}
+
 /** Write runtime output to the private desktop log. */
 function writeRuntimeOutput(stream: 'stdout' | 'stderr', text: string): void {
+  if (text.includes('dsh web: opening the default browser')) runtimeRequestedBrowserOpen = true
   runtimeLog?.write(`[${new Date().toISOString()}] [${stream}] ${text}`)
 }
 
@@ -146,6 +183,8 @@ function destroyTray(): void {
   sessionEnding = false
   removeCloseToTray?.()
   removeCloseToTray = null
+  removeSessionEndListener?.()
+  removeSessionEndListener = null
   if (desktopTray !== null && !desktopTray.isDestroyed()) desktopTray.destroy()
   desktopTray = null
 }
@@ -160,6 +199,7 @@ function installTray(window: BrowserWindow): void {
     nextTray.setContextMenu(Menu.buildFromTemplate([
       { label: '打开 DeepSeek Harness', click: show },
       { label: '检查 Harness 更新', click: () => { show(); void checkForUpdates(true) } },
+      { label: '检查桌面端更新', click: () => { show(); void checkForShellUpdates(true) } },
       { type: 'separator' },
       { label: '退出', click: () => { app.quit() } },
     ]))
@@ -183,14 +223,18 @@ function installTray(window: BrowserWindow): void {
     nextTray.destroy()
     throw error
   }
-  window.on('query-session-end', () => {
+  const onSessionEnd = (): void => {
     sessionEnding = true
     if (sessionEndReset !== null) clearTimeout(sessionEndReset)
     sessionEndReset = setTimeout(() => {
       sessionEndReset = null
       sessionEnding = false
     }, SESSION_END_CLOSE_WINDOW_MS)
-  })
+  }
+  window.on('query-session-end', onSessionEnd)
+  removeSessionEndListener = () => {
+    window.removeListener('query-session-end', onSessionEnd)
+  }
 }
 
 /** Import a legacy home after consent, or from the isolated smoke fixture. */
@@ -285,27 +329,30 @@ async function startSelectedRuntime(
   }
 }
 
-/** Keep all navigation inside the loopback Harness origin or an external browser. */
+/** Keep automatic navigation inside the loopback Harness origin. */
 function applyNavigationPolicy(window: BrowserWindow, runtimeUrl: string): void {
   const runtimeOrigin = new URL(runtimeUrl).origin
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      const candidate = new URL(url)
-      if (candidate.protocol === 'https:' || candidate.protocol === 'http:') void shell.openExternal(candidate.href)
-    } catch {
-      // A malformed renderer URL is denied by the handler's fixed response.
-    }
-    return { action: 'deny' }
-  })
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event, url) => {
     try {
       const candidate = new URL(url)
       if (candidate.origin === runtimeOrigin) return
       event.preventDefault()
-      if (candidate.protocol === 'https:' || candidate.protocol === 'http:') void shell.openExternal(candidate.href)
     } catch {
       event.preventDefault()
     }
+  })
+  const onExternalLink = (event: IpcMainEvent, value: unknown): void => {
+    if (event.sender !== window.webContents || typeof value !== 'string') return
+    const candidate = externalHttpUrl(value, runtimeUrl)
+    if (candidate === null) return
+    void shell.openExternal(candidate).catch((error: unknown) => {
+      writeRuntimeOutput('stderr', `external link failed: ${String(error)}\n`)
+    })
+  }
+  ipcMain.on(EXTERNAL_LINK_CHANNEL, onExternalLink)
+  window.once('closed', () => {
+    ipcMain.removeListener(EXTERNAL_LINK_CHANNEL, onExternalLink)
   })
 }
 
@@ -402,6 +449,226 @@ async function relaunchDesktop(): Promise<void> {
   app.exit(0)
 }
 
+/** Convert runtime-update state into target-neutral progress-window text. */
+function presentRuntimeUpdate(progress: RuntimeUpdateProgress): UpdateProgressPresentation {
+  if (progress.phase === 'downloading') {
+    const fraction = progress.progress.received / progress.progress.total
+    return {
+      phase: 'progress',
+      status: '正在下载 Harness 运行时',
+      detail: `${Math.floor(fraction * 100)}%`,
+      fraction,
+    }
+  }
+  if (progress.phase === 'verifying') {
+    return {
+      phase: 'indeterminate',
+      status: '正在验证签名并安装',
+      detail: '当前版本仍可继续回滚',
+    }
+  }
+  return {
+    phase: 'complete',
+    status: '更新已准备完成',
+    detail: progress.runtimeId,
+  }
+}
+
+/** Convert shell-update state into target-neutral progress-window text. */
+function presentShellUpdate(state: ShellUpdateState): UpdateProgressPresentation | null {
+  if (state.kind === 'downloading') {
+    if (state.progress.total === null) {
+      return {
+        phase: 'indeterminate',
+        status: '正在下载桌面端更新',
+        detail: `${state.progress.received} 字节`,
+      }
+    }
+    const fraction = state.progress.received / state.progress.total
+    return {
+      phase: 'progress',
+      status: '正在下载桌面端更新',
+      detail: `${Math.floor(fraction * 100)}%`,
+      fraction,
+    }
+  }
+  if (state.kind === 'verified') {
+    return {
+      phase: 'indeterminate',
+      status: '正在准备桌面端更新',
+      detail: '安装包和 blockmap 已通过签名清单校验',
+    }
+  }
+  if (state.kind === 'ready') {
+    return {
+      phase: 'complete',
+      status: '桌面端更新已准备完成',
+      detail: state.release.manifest.version,
+    }
+  }
+  return null
+}
+
+/** Report a shell update failure after a manual action or accepted download. */
+async function showShellUpdateFailure(state: Extract<ShellUpdateState, { kind: 'error' }>): Promise<void> {
+  const detail = `${state.code}: ${state.message}`
+  writeRuntimeOutput('stderr', `desktop shell update failed: ${detail}\n`)
+  if (mainWindow !== null) {
+    await dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      message: '桌面端更新失败',
+      detail,
+    })
+  }
+}
+
+/** Quiesce the application and hand one reverified release to NSIS. */
+async function installShellUpdate(release: AvailableShellUpdate): Promise<void> {
+  const updater = shellUpdater
+  const window = mainWindow
+  if (updater === null || window === null) return
+  await writeInstalledShellIdentity(installedShellIdentityPath(), release)
+  quitting = true
+  try {
+    await quiesceDesktop()
+  } catch (error) {
+    quitting = false
+    await dialog.showMessageBox(window, {
+      type: 'error',
+      message: '无法安全安装桌面端更新',
+      detail: String(error),
+    })
+    return
+  }
+  destroyTray()
+  const result = await updater.install(new AbortController().signal)
+  if (result.kind === 'installing') return
+  const detail = result.kind === 'error' ? `${result.code}: ${result.message}` : `unexpected state: ${result.kind}`
+  await dialog.showMessageBox(window, {
+    type: 'error',
+    message: '无法启动桌面端安装程序',
+    detail: `${detail}\n当前版本将重新启动。`,
+  })
+  app.relaunch()
+  app.exit(1)
+}
+
+/** Offer restart only after both signed desktop assets are ready. */
+async function offerShellUpdateInstall(release: AvailableShellUpdate): Promise<void> {
+  const window = mainWindow
+  if (window === null) return
+  const answer = await dialog.showMessageBox(window, {
+    type: 'info',
+    title: '桌面端更新已准备完成',
+    message: `DeepSeek Harness Desktop ${release.manifest.version} 已准备完成`,
+    detail: '重启会先安全停止 Harness 运行时，再启动 NSIS 安装程序。桌面端更新不提供自动回滚。',
+    buttons: ['重启并更新', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+  })
+  if (answer.response === 0) await installShellUpdate(release)
+}
+
+/** Download one consented shell release and expose explicit install consent. */
+async function downloadShellUpdate(): Promise<void> {
+  const updater = shellUpdater
+  const window = mainWindow
+  if (updater === null || window === null) return
+  const controller = new AbortController()
+  const progress = new UpdateProgressWindow(
+    app.getAppPath(),
+    window,
+    () => { controller.abort() },
+    '更新 DeepSeek Harness Desktop',
+  )
+  const dispose = updater.onStateChange((state) => {
+    const presentation = presentShellUpdate(state)
+    if (presentation !== null) progress.setProgress(presentation)
+  })
+  try {
+    const result = await updater.download(controller.signal)
+    progress.close()
+    if (result.kind === 'ready') await offerShellUpdateInstall(result.release)
+    else if (result.kind === 'error') await showShellUpdateFailure(result)
+  } finally {
+    dispose()
+    progress.close()
+  }
+}
+
+/** Present a verified shell candidate before any installer bytes are downloaded. */
+async function offerShellUpdate(release: AvailableShellUpdate): Promise<void> {
+  const window = mainWindow
+  if (window === null) return
+  const answer = await dialog.showMessageBox(window, {
+    type: 'question',
+    title: '桌面端更新可用',
+    message: `发现 DeepSeek Harness Desktop ${release.manifest.version}`,
+    detail: '下载完成后仍会再次征求重启安装确认；Harness 运行时和用户数据不会被替换。',
+    buttons: ['立即下载', '稍后'],
+    defaultId: 0,
+    cancelId: 1,
+  })
+  if (answer.response === 0) await downloadShellUpdate()
+}
+
+/** Interpret one authenticated shell check without acquiring the shared update lock. */
+async function handleShellUpdateCheck(state: ShellUpdateState, manual: boolean): Promise<void> {
+  if (state.kind === 'available') {
+    await offerShellUpdate(state.release)
+    return
+  }
+  if (state.kind === 'error') {
+    if (manual) await showShellUpdateFailure(state)
+    else writeRuntimeOutput('stderr', `desktop shell update check failed: ${state.code}: ${state.message}\n`)
+    return
+  }
+  if (state.kind === 'incompatible') {
+    if (manual && mainWindow !== null) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        message: '最新桌面端版本不适用于当前安装',
+        detail: `不兼容项：${state.reason}`,
+      })
+    }
+    return
+  }
+  if (state.kind === 'none' && manual && mainWindow !== null) {
+    await dialog.showMessageBox(mainWindow, { type: 'info', message: '当前桌面端已是最新版本' })
+  }
+}
+
+/** Check shell releases while the caller owns the shared update lock. */
+async function runShellUpdateCheck(manual: boolean): Promise<void> {
+  const updater = shellUpdater
+  if (updater === null) return
+  const retained = updater.state
+  if (retained.kind === 'ready') {
+    await offerShellUpdateInstall(retained.release)
+    return
+  }
+  if (retained.kind === 'error'
+    && retained.operation === 'install'
+    && retained.release !== undefined
+    && retained.downloaded !== undefined) {
+    await offerShellUpdateInstall(retained.release)
+    return
+  }
+  const state = await updater.check(new AbortController().signal)
+  await handleShellUpdateCheck(state, manual)
+}
+
+/** Check the desktop release feed once; shell and runtime transfers never overlap. */
+async function checkForShellUpdates(manual: boolean): Promise<void> {
+  if (updateInProgress || shellUpdater === null) return
+  updateInProgress = true
+  try {
+    await runShellUpdateCheck(manual)
+  } finally {
+    updateInProgress = false
+  }
+}
+
 /** Present one check result and install only after explicit consent. */
 async function handleUpdateCheck(check: RuntimeUpdateCheck, manual: boolean): Promise<void> {
   const window = mainWindow
@@ -420,13 +687,11 @@ async function handleUpdateCheck(check: RuntimeUpdateCheck, manual: boolean): Pr
       type: 'warning',
       message: '新的 Harness 需要更新桌面壳',
       detail: `运行时要求桌面版 ${check.release.manifest.minDesktopVersion} 或更高版本。`,
-      buttons: ['打开 Releases', '取消'],
+      buttons: ['检查桌面端更新', '取消'],
       defaultId: 0,
       cancelId: 1,
     })
-    if (answer.response === 0) {
-      await shell.openExternal(`https://github.com/${RUNTIME_RELEASE_REPOSITORY}/releases`)
-    }
+    if (answer.response === 0) await runShellUpdateCheck(true)
     return
   }
 
@@ -448,14 +713,13 @@ async function handleUpdateCheck(check: RuntimeUpdateCheck, manual: boolean): Pr
   }
   if (answer.response !== 0) return
 
-  updateInProgress = true
   const controller = new AbortController()
   const progress = new UpdateProgressWindow(app.getAppPath(), window, () => {
     controller.abort()
   })
   try {
     runtimeState = await updater.install(release, await store.readState(), (value) => {
-      progress.setProgress(value)
+      progress.setProgress(presentRuntimeUpdate(value))
     }, controller.signal)
     progress.close()
     const restart = await dialog.showMessageBox(window, {
@@ -476,8 +740,6 @@ async function handleUpdateCheck(check: RuntimeUpdateCheck, manual: boolean): Pr
         detail: error instanceof Error ? error.message : String(error),
       })
     }
-  } finally {
-    updateInProgress = false
   }
 }
 
@@ -566,6 +828,11 @@ function installMenu(window: BrowserWindow, versionInfo: DesktopVersionInfo): vo
       submenu: [
         { label: '检查 Harness 更新', click: () => void checkForUpdates(true) },
         { label: '回退 Harness 版本', click: () => void requestRollback() },
+        {
+          id: 'check-shell-updates',
+          label: '检查桌面端更新',
+          click: () => void checkForShellUpdates(true),
+        },
         { type: 'separator' },
         {
           id: 'about-harness',
@@ -593,6 +860,11 @@ async function bootstrap(): Promise<void> {
   runningRuntime = started.runtime
   runtimeState = started.state
   const desktopVersion = app.getVersion()
+  const desktopChannel = installedShellChannel(desktopVersion)
+  const installedManifestSha256 = await readInstalledShellManifestSha256(
+    installedShellIdentityPath(),
+    desktopVersion,
+  )
   const versionInfo = createDesktopVersionInfo(started.manifest, desktopVersion)
   mainWindow = await createMainWindow(runningRuntime.url)
   runtimeUpdater = new RuntimeUpdater(
@@ -601,12 +873,40 @@ async function bootstrap(): Promise<void> {
     desktopVersion,
     DESKTOP_PROTOCOL_VERSION,
   )
+  shellUpdater = new ShellUpdater(
+    new ElectronUpdaterAdapter(
+      new GitHubDesktopReleaseSource(DESKTOP_RELEASE_REPOSITORY, DESKTOP_RELEASE_TAG_PREFIX),
+      desktopChannel,
+      shellUpdateDownloadDirectory(),
+      (message) => { writeRuntimeOutput('stderr', `desktop updater: ${message}\n`) },
+    ),
+    {
+      version: desktopVersion,
+      channel: desktopChannel,
+      platform: process.platform,
+      arch: process.arch,
+      ...(installedManifestSha256 === undefined ? {} : { manifestSha256: installedManifestSha256 }),
+    },
+    DESKTOP_UPDATE_PUBLIC_KEY_PEM,
+  )
   installMenu(mainWindow, versionInfo)
   installTray(mainWindow)
 
   if (smokeTest) {
     if (Menu.getApplicationMenu()?.getMenuItemById('about-harness')?.label !== '关于 DeepSeek Harness') {
       throw new Error('desktop application menu does not expose Harness version information')
+    }
+    if (Menu.getApplicationMenu()?.getMenuItemById('check-shell-updates')?.label !== '检查桌面端更新') {
+      throw new Error('desktop application menu does not expose shell update discovery')
+    }
+    const automaticPopupDenied: unknown = await mainWindow.webContents.executeJavaScript(
+      "window.open('https://example.invalid/dsh-desktop-smoke') === null",
+    )
+    if (automaticPopupDenied !== true) {
+      throw new Error('desktop navigation policy did not deny an automatic external popup')
+    }
+    if (runtimeRequestedBrowserOpen) {
+      throw new Error('desktop runtime requested the default browser during startup')
     }
     mainWindow.close()
     if (mainWindow.isDestroyed() || desktopTray === null || desktopTray.isDestroyed()) {
@@ -637,7 +937,10 @@ async function bootstrap(): Promise<void> {
       writeRuntimeOutput('stderr', `runtime exit handling failed: ${String(error)}\n`)
     })
   if (process.env.DSH_DESKTOP_DISABLE_UPDATE_CHECK !== '1') {
-    void delay(2_000).then(() => checkForUpdates(false))
+    void delay(2_000).then(async () => {
+      await checkForShellUpdates(false)
+      await checkForUpdates(false)
+    })
   }
 }
 
