@@ -375,6 +375,35 @@ describe('Python release workflows', () => {
 })
 
 describe('Windows runtime automation', () => {
+  it('keeps desktop preview tags, package versions, and GitHub prerelease state aligned', () => {
+    const workflow = loadWorkflow('.github/workflows/windows-desktop-release.yml')
+    const dispatch = workflowEvent(workflow, 'workflow_dispatch')
+    const publish = workflowJob(workflow, 'publish')
+    const desktopPackage: unknown = JSON.parse(readFileSync(resolve(root, 'apps/desktop/package.json'), 'utf8'))
+    if (!isRecord(dispatch.inputs)
+      || !isRecord(desktopPackage)
+      || typeof desktopPackage.version !== 'string'
+      || !Array.isArray(publish.steps)) {
+      throw new TypeError('Windows desktop release must define inputs, a package version, and publish steps')
+    }
+
+    expect(dispatch.inputs).toMatchObject({
+      'desktop-tag': { type: 'string', default: `desktop-v${desktopPackage.version}` },
+      prerelease: { type: 'boolean', default: desktopPackage.version.includes('-') },
+      publish: { type: 'boolean', default: false },
+    })
+    const release = (publish.steps as unknown[])
+      .filter(isRecord)
+      .find(step => step.name === 'Create manual shell-upgrade release')
+    if (!isRecord(release) || typeof release.run !== 'string') {
+      throw new TypeError('Windows desktop release must define its GitHub Release command')
+    }
+    expect(release.run).toContain("if ('${{ inputs.prerelease }}' -eq 'true')")
+    expect(release.run).toContain("$releaseFlags += '--prerelease'")
+    expect(release.run).toContain('gh release create')
+    expect(release.run).toContain('@releaseFlags')
+  })
+
   it('merge-syncs official master without rewriting either fork branch', () => {
     const workflow = loadWorkflow('.github/workflows/sync-upstream-runtime.yml')
     const schedule = workflow.on
@@ -484,7 +513,11 @@ describe('Windows runtime automation', () => {
     expect(buildText).toContain('gh api --paginate')
     expect(buildText.indexOf('git rev-parse HEAD')).toBeLessThan(buildText.indexOf('pnpm/action-setup@v4'))
     expect(buildText).toContain('Build and smoke-test runtime')
-    expect(buildText).toContain('../tooling/scripts/runtime-release/build-windows-runtime.ts')
+    expect(buildText).toContain('Copy-Item -Recurse -Force ../tooling/scripts/runtime-release scripts/runtime-release')
+    expect(buildText).toContain('Get-ChildItem -Path scripts/runtime-release -Filter *.spec.ts | Remove-Item -Force')
+    expect(buildText).toContain("Add-Member -NotePropertyName 'runtime:windows:build'")
+    expect(buildText).toContain('pnpm run runtime:windows:build')
+    expect(buildText).not.toContain('../tooling/scripts/runtime-release/build-windows-runtime.ts')
     expect(buildText).toContain('working-directory":"source')
     expect(buildText).not.toContain('RUNTIME_SIGNING_PRIVATE_KEY_PEM')
     expect(buildText).not.toContain('--private-key')

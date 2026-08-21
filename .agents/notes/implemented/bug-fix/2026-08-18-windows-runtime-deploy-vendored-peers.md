@@ -2,6 +2,8 @@
 
 Status: implemented
 
+English | [中文](2026-08-18-windows-runtime-deploy-vendored-peers.zh.md)
+
 ## Problem
 
 The Windows runtime release builds from fork `master`, where `pnpm --filter @deepseek-ai/dsh deploy --prod` omits packages that appear only as peer dependencies of deployed entries — vendored cordis plugins such as `@deepseek-ai/cordis-plugin-group`, and workspace libraries such as `@deepseek-ai/dsh-scope` imported by `dsh-agent-presets`. The deployed tree then fails its staged `dsh web` launch with `ERR_MODULE_NOT_FOUND`, so no `runtime-v*` release can be published and the desktop shell's runtime update channel stays empty.

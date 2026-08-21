@@ -10,6 +10,8 @@
 
 桌面端源码与安装器版本位于 `dev-windesktop`，使用 `desktop-v*` 标签；经过验证的 Harness 运行时从 `master` 构建，在 `shijiejintoulwh/deepseek-harness` 中使用不可变的 `runtime-v<harnessVersion>-r<revision>` 标签。
 
+预览版壳会在桌面包与 `desktop-v*` 标签中使用相同的 SemVer 预发布后缀，发布 dispatch 也会显式把它标记为 GitHub prerelease，因此不会替换最新的稳定桌面端 release。
+
 桌面包保持私有，并有意排除在 dsh 的 npm 发布族之外。
 
 [上游同步 workflow](../../.github/workflows/sync-upstream-runtime.yml) 每六小时从 fork 的默认 `master` 分支运行一次。它以合并方式把 `deepseek-ai/deepseek-harness` 同步到 fork 的 `master` 与 `dev-windesktop`，且不重写任一分支；官方 `master` 前进时，它会用合并后的精确提交调用运行时 workflow，并自动发布下一个打包修订。打包工具来自 `dev-windesktop`，生产依赖闭包与签名清单中的源提交则只来自 `master`。发生冲突或任何构建、冒烟测试、签名、发布失败时，本次 release 会停止；下次运行会识别已经同步但没有对应 release 目标的 `master` 提交，并重试未完成的发布。
@@ -41,6 +43,10 @@ Electron 用户数据（包括桌面版专用的 `DSH_HOME`）保存在 `%APPDAT
 上游同步与 release 发布无需人工参与；个人电脑上的安装继续保留既有的下载与重启确认，防止后台检查在未经同意时占用带宽或打断正在进行的工作。
 
 候选版本只有在页面成功加载并保持存活 30 秒后才会成为当前版本；候选启动失败时保留原运行时，两次失败后拒绝该候选，菜单也可手动交换当前版本与上一个版本以完成回滚。
+
+## 版本信息
+
+打开 `帮助` > `关于 DeepSeek Harness`，可以查看启动时实际选择的运行时进程清单所记录的 Harness 语义版本和打包修订，以及 Electron 宿主版本。复制操作还会加入运行时源码提交和内置 Node 版本，便于诊断。这个本地视图不会执行更新发现，也不需要网络访问。
 
 ## 本地构建
 

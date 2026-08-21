@@ -16,7 +16,7 @@ The fork also needs a clear ownership boundary: desktop-only code remains on `de
 
 [`apps/desktop`](../../../../apps/desktop/README.md) is a private Electron host with version `1.x`; it is excluded from the npm dsh release family, whose publishable applications remain `apps/cli` and `apps/web` under the [npm release decision](../process/2026-08-10-npm-release-sequences.md).
 
-The shell is released manually from `dev-windesktop` as `desktop-v*`; ordinary shell updates are not automatic.
+The shell is released manually from `dev-windesktop` as `desktop-v*`; ordinary shell updates are not automatic. A preview shell keeps the same SemVer prerelease suffix in its package metadata and tag, and the dispatch marks its GitHub Release as a prerelease; a stable shell omits both.
 
 `desktop-landing` is a dependency-free static page for the community Windows release. Its first screen, project notice, and footer identify the application as community-maintained and not an official DeepSeek desktop client. Separate links name the official Harness website, the upstream repository, and the community desktop branch; the Windows button points to one reviewed versioned installer rather than resolving a mutable download in the browser.
 
@@ -44,6 +44,8 @@ This applies the existing [single Harness-home resolver](2026-07-24-single-harne
 
 Runtime state retains `active`, `previous`, and `pending` identifiers plus the pending failure count and skipped release.
 
+The application menu's `about-harness` item reads the installed manifest for the runtime selected by `started.selectedId` before its process starts. This is the pending candidate during validation and otherwise the active runtime, so the dialog identifies the process the shell actually launched instead of assuming `active`. It displays the Harness semantic version and packaging revision beside the Electron host version; copied diagnostics also include the runtime source commit and bundled Node version. Opening the dialog performs no update discovery or network request.
+
 Runtime discovery prefers GitHub's anonymous Releases REST endpoint. A REST rate-limit response records its retry time and switches the provider to the public Releases Atom feed for the cooldown; feed tags derive direct manifest, signature, and archive URLs, while the existing Ed25519 signature and strict manifest remain the authority for every candidate. If the fallback also fails, a manual check reports an estimated retry interval and automatic discovery remains silent.
 
 An update is installed beside existing versions after download confirmation and staged for a user-confirmed restart; a candidate becomes active only after its Web page loads and remains live for 30 seconds, a failed launch leaves the active version unchanged, two failures reject the pending candidate, and the user can explicitly swap active and previous versions. Upstream synchronization and publication are unattended, but a background client check cannot consume bandwidth or interrupt active work without consent.
@@ -52,7 +54,7 @@ The host launches only the bundled runtime Node, accepts only a declared `http:/
 
 ## Verification
 
-Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, direct signed-asset verification, update diagnostics, close interception, explicit-exit pass-through, and window restoration. Workflow tests pin the six-hour schedule, merge-only branch updates, exact `master` source commit, automatic revision selection, secret-free build, protected checkout-free signing, and publication dependency. The packaged desktop smoke closes the real BrowserWindow and fails unless the real Tray retains it before process and log quiescence.
+Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, direct signed-asset verification, update diagnostics, version-field mapping, dialog and clipboard text, close interception, explicit-exit pass-through, and window restoration. Workflow tests pin the six-hour schedule, merge-only branch updates, exact `master` source commit, automatic revision selection, secret-free build, protected checkout-free signing, publication dependency, and desktop package, tag, and prerelease alignment. The packaged desktop smoke requires the native About item, closes the real BrowserWindow, and fails unless the real Tray retains it before process and log quiescence.
 
 ## Alternatives considered
 
@@ -82,9 +84,15 @@ Focused tests pin REST rate-limit parsing, cooldown behavior, Atom fallback, dir
 
 **Resolve the latest installer through the GitHub API in the browser.** Rejected because an anonymous client-side request can be rate-limited and would make the primary download depend on JavaScript and remote response fields. Each shell release updates the explicit version, asset URL, and checksum link together.
 
+**Show only Electron's application version.** Rejected because that identifies the independently released shell, not the Harness runtime whose behavior the user is running and updating.
+
+**Render desktop version information in the ordinary Web settings page.** Rejected because the same Web profile runs outside Electron, while the selected runtime manifest and shell version are native-host data. The native application menu exposes them without adding a privileged Electron API to the page.
+
 ## Consequences
 
 Official Harness advances can produce a verified fork release without manual synchronization or packaging, independently of the shell. First launch still works from an offline seed, and the host retains one last-known-good runtime for automatic or manual rollback.
+
+Users can distinguish the running Harness version from the desktop shell version while offline and copy the signed release identifiers needed for diagnostics.
 
 The scheduled workflow must exist on the fork's default branch, GitHub Actions needs write permission for branch and release updates, and the `runtime-release` environment must expose the signing secret without required reviewers for unattended operation. Merge, build, smoke, signing, or publication failure prevents a new runtime release; branch synchronization may already have completed before a later release job fails.
 

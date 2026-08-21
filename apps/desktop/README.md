@@ -10,6 +10,8 @@ The host owns installation, runtime selection, process supervision, native promp
 
 Desktop source and installer releases live on `dev-windesktop` under `desktop-v*` tags, while verified Harness runtime releases are built from `master` under immutable `runtime-v<harnessVersion>-r<revision>` tags in `shijiejintoulwh/deepseek-harness`.
 
+Preview shell versions use the same SemVer prerelease suffix in the desktop package and `desktop-v*` tag, and the release dispatch explicitly marks them as GitHub prereleases so they do not replace the latest stable desktop release.
+
 The desktop package is private and deliberately excluded from the npm dsh release family.
 
 The [upstream sync workflow](../../.github/workflows/sync-upstream-runtime.yml) runs every six hours from the fork's default `master` branch. It merge-syncs `deepseek-ai/deepseek-harness` into fork `master` and `dev-windesktop` without rewriting either branch; when official `master` advances, it calls the runtime workflow with the exact post-merge commits and publishes the next packaging revision automatically. Packaging tools come from `dev-windesktop`, while the production dependency closure and signed source commit come only from `master`. A conflict or any build, smoke, signing, or publication failure stops the release; the next run detects a synchronized `master` commit with no release target and retries the unfinished publication.
@@ -41,6 +43,10 @@ At startup the host checks the latest `runtime-v*` release, prompts before downl
 Upstream synchronization and release publication are unattended; installation on a personal machine keeps the existing download and restart confirmations so a background check cannot consume bandwidth or interrupt active work without consent.
 
 A candidate becomes active only after its page loads and remains alive for 30 seconds; failed candidate launches retain the current runtime, two failed attempts reject the candidate, and the menu can swap the current and previous versions for a manual rollback.
+
+## Version information
+
+Open `帮助` > `关于 DeepSeek Harness` to view the Harness semantic version and packaging revision from the manifest of the exact runtime process selected at startup, alongside the Electron host version. The copy action adds the runtime source commit and bundled Node version for diagnostics. This local view does not perform update discovery or require network access.
 
 ## Local build
 

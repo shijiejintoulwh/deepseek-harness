@@ -16,7 +16,7 @@ Windows 产品需要一个可安装且允许用户选择安装目录的壳，同
 
 [`apps/desktop`](../../../../apps/desktop/README.md) 是版本为 `1.x` 的私有 Electron 宿主；它排除在 dsh 的 npm 发布族之外，该发布族中的可发布应用仍是 [npm 发布决策](../process/2026-08-10-npm-release-sequences.md)所定义的 `apps/cli` 与 `apps/web`。
 
-壳从 `dev-windesktop` 手动发布为 `desktop-v*`；普通壳更新不自动进行。
+壳从 `dev-windesktop` 手动发布为 `desktop-v*`；普通壳更新不自动进行。预览版壳会在 package metadata 与 tag 中保留相同的 SemVer 预发布后缀，dispatch 也会把 GitHub Release 标记为 prerelease；稳定版壳不使用这两项。
 
 `desktop-landing` 是社区 Windows release 使用的无依赖静态页面。它在首屏、项目声明区与页脚明确说明该应用由社区维护，并非 DeepSeek 官方桌面客户端。页面分别标明 Harness 官方网站、上游仓库与社区桌面分支；Windows 按钮指向一个经过审核的版本化安装包，而不是在浏览器中解析可变下载地址。
 
@@ -44,6 +44,8 @@ Electron 用户数据与桌面专用 Harness home 位于 `%APPDATA%\DeepSeekHarn
 
 运行时状态保留 `active`、`previous`、`pending` 标识，以及候选失败次数和被跳过的 release。
 
+应用菜单的 `about-harness` 项会在运行时进程启动前，读取 `started.selectedId` 所选版本的已安装清单。验证候选时它指向 `pending`，其他情况下指向 `active`，因此对话框标识的是壳实际启动的进程，而不是假定使用 `active`。对话框会把 Harness 语义版本和打包修订与 Electron 宿主版本并列展示；复制的诊断信息还包含运行时源码提交和内置 Node 版本。打开对话框不会执行更新发现或网络请求。
+
 运行时发现优先使用 GitHub 的匿名 Releases REST 端点。REST 限流响应会记录重试时间，并在冷却期间把 provider 切换到公开 Releases Atom feed；feed 标签用于派生清单、签名与压缩包的直接 URL，而既有 Ed25519 签名和严格清单仍是每个候选版本的权威依据。fallback 也失败时，手动检查会显示预计重试间隔，自动发现则保持静默。
 
 更新会在用户确认下载后安装到现有版本旁，并在用户确认后标记为重启候选；候选只有在 Web 页面加载并持续存活 30 秒后才成为当前版本，启动失败不会改变当前版本，两次失败后拒绝候选，用户也可明确交换当前版本与上一个版本。上游同步与发布无需人工参与，但后台客户端检查不能在未经同意时占用带宽或打断正在进行的工作。
@@ -52,7 +54,7 @@ Electron 用户数据与桌面专用 Harness home 位于 `%APPDATA%\DeepSeekHarn
 
 ## 验证
 
-针对性测试固定 REST 限流解析、冷却行为、Atom fallback、直接签名资源验证、更新诊断、关闭拦截、明确退出放行和窗口恢复。Workflow 测试固定每六小时调度、仅合并的分支更新、准确的 `master` 源提交、自动修订选择、无机密构建、受保护且不检出仓库的签名及发布依赖。打包后的桌面冒烟测试会关闭真实 BrowserWindow；如果真实 Tray 未能在进程与日志收敛前保留窗口，测试就会失败。
+针对性测试固定 REST 限流解析、冷却行为、Atom fallback、直接签名资源验证、更新诊断、版本字段映射、对话框与剪贴板文本、关闭拦截、明确退出放行和窗口恢复。Workflow 测试固定每六小时调度、仅合并的分支更新、准确的 `master` 源提交、自动修订选择、无机密构建、受保护且不检出仓库的签名、发布依赖，以及桌面端 package、tag 与 prerelease 状态一致性。打包后的桌面冒烟测试要求存在原生“关于”菜单项，并关闭真实 BrowserWindow；如果真实 Tray 未能在进程与日志收敛前保留窗口，测试就会失败。
 
 ## 考虑过的替代方案
 
@@ -82,9 +84,15 @@ Electron 用户数据与桌面专用 Harness home 位于 `%APPDATA%\DeepSeekHarn
 
 **在浏览器中通过 GitHub API 解析最新安装包。** 拒绝，因为匿名客户端请求可能被限流，也会让主要下载依赖 JavaScript 和远程响应字段。每个壳 release 会一起更新明确的版本、资源 URL 与校验文件链接。
 
+**只显示 Electron 应用版本。** 拒绝，因为它标识的是独立发布的壳，而不是用户正在运行和更新的 Harness 运行时。
+
+**在普通 Web 设置页面中呈现桌面版本信息。** 拒绝，因为同一 Web profile 也会在 Electron 之外运行，而所选运行时清单与壳版本属于原生宿主数据。原生应用菜单无需向页面增加具备特权的 Electron API，即可显示这些信息。
+
 ## 后果
 
 官方 Harness 前进后可以自动产生经过验证的 fork release，无需人工同步或打包，并与壳独立推进。首次启动仍可使用离线种子，宿主也会保留一个最后已知可用运行时用于自动或手动回滚。
+
+用户可以在离线状态下区分正在运行的 Harness 版本与桌面壳版本，并复制诊断所需的已签名 release 标识。
 
 定时 workflow 必须位于 fork 的默认分支，GitHub Actions 需要具备分支与 release 更新的写权限；要实现无人值守，`runtime-release` environment 必须提供签名机密且不设置必需审核人。合并、构建、冒烟测试、签名或发布失败都会阻止新的运行时 release；如果后续 release job 失败，分支同步可能已经完成。
 

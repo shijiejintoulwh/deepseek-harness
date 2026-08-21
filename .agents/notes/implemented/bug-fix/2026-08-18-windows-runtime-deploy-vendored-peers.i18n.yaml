@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-18-windows-runtime-deploy-vendored-peers.md
+2026-08-18-windows-runtime-deploy-vendored-peers.md: e894f6a4c5b665cc40d22e6cc50724cc93480860
+2026-08-18-windows-runtime-deploy-vendored-peers.zh.md: 632590f8cf855a9d877b88218fcf274ff12e18cb

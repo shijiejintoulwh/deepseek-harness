@@ -12,6 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -46,6 +47,7 @@ import {
   rollbackRuntime,
   runtimeId,
   selectedRuntimeId,
+  type RuntimeManifest,
   type RuntimeState,
 } from './runtime-model.ts'
 import { RuntimeStore } from './runtime-store.ts'
@@ -53,6 +55,12 @@ import { parseShellThemeReport, shellBackgroundColor, SHELL_THEME_CHANNEL } from
 import { installCloseToTray, showTrayWindow } from './tray-lifecycle.ts'
 import { describeUpdateFailure } from './update-error.ts'
 import { RuntimeUpdater, type RuntimeUpdateCheck } from './updater.ts'
+import {
+  createDesktopVersionInfo,
+  type DesktopVersionInfo,
+  formatVersionClipboardText,
+  formatVersionDialogDetail,
+} from './version-info.ts'
 
 const PRODUCT_DIRECTORY = 'DeepSeekHarnessDesktop'
 const HOME_IMPORT_DECISION = 'home-import-decision-v1.json'
@@ -254,12 +262,13 @@ async function startSelectedRuntime(
   initialState: RuntimeState,
   harnessHome: string,
   agentsHome: string,
-): Promise<{ runtime: RunningRuntime; state: RuntimeState; selectedId: string }> {
+): Promise<{ runtime: RunningRuntime; manifest: RuntimeManifest; state: RuntimeState; selectedId: string }> {
   let state = initialState
   for (;;) {
     const selected = selectedRuntimeId(state)
     if (selected === null) throw new Error('no Harness runtime is selected')
     try {
+      const manifest = await store.readInstalledManifest(selected)
       const runtime = await launchRuntime({
         runtimeDirectory: store.runtimeDirectory(selected),
         harnessHome,
@@ -267,7 +276,7 @@ async function startSelectedRuntime(
         timeoutMs: RUNTIME_START_TIMEOUT_MS,
         onOutput: writeRuntimeOutput,
       })
-      return { runtime, state, selectedId: selected }
+      return { runtime, manifest, state, selectedId: selected }
     } catch (error) {
       if (state.pending === null) throw error
       state = recordPendingFailure(state, MAX_PENDING_LAUNCH_FAILURES)
@@ -518,8 +527,23 @@ async function requestRollback(): Promise<void> {
   await relaunchDesktop()
 }
 
+/** Show versions for the running Harness process and its Electron host. */
+async function showVersionInfo(window: BrowserWindow, info: DesktopVersionInfo): Promise<void> {
+  const answer = await dialog.showMessageBox(window, {
+    type: 'info',
+    title: '关于 DeepSeek Harness',
+    message: 'DeepSeek Harness',
+    detail: formatVersionDialogDetail(info),
+    buttons: ['复制版本信息', '关闭'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  })
+  if (answer.response === 0) clipboard.writeText(formatVersionClipboardText(info))
+}
+
 /** Install the application menu after runtime services are ready. */
-function installMenu(): void {
+function installMenu(window: BrowserWindow, versionInfo: DesktopVersionInfo): void {
   const template: MenuItemConstructorOptions[] = [
     {
       label: '文件',
@@ -543,7 +567,11 @@ function installMenu(): void {
         { label: '检查 Harness 更新', click: () => void checkForUpdates(true) },
         { label: '回退 Harness 版本', click: () => void requestRollback() },
         { type: 'separator' },
-        { role: 'about', label: '关于 DeepSeek Harness Desktop' },
+        {
+          id: 'about-harness',
+          label: '关于 DeepSeek Harness',
+          click: () => void showVersionInfo(window, versionInfo),
+        },
       ],
     },
   ]
@@ -564,17 +592,22 @@ async function bootstrap(): Promise<void> {
   const started = await startSelectedRuntime(runtimeStore, runtimeState, homes.harnessHome, homes.agentsHome)
   runningRuntime = started.runtime
   runtimeState = started.state
+  const desktopVersion = app.getVersion()
+  const versionInfo = createDesktopVersionInfo(started.manifest, desktopVersion)
   mainWindow = await createMainWindow(runningRuntime.url)
   runtimeUpdater = new RuntimeUpdater(
     new GitHubRuntimeProvider(RUNTIME_RELEASE_REPOSITORY, RUNTIME_RELEASE_TAG_PREFIX, RUNTIME_MANIFEST_PUBLIC_KEY_PEM),
     runtimeStore,
-    app.getVersion(),
+    desktopVersion,
     DESKTOP_PROTOCOL_VERSION,
   )
-  installMenu()
+  installMenu(mainWindow, versionInfo)
   installTray(mainWindow)
 
   if (smokeTest) {
+    if (Menu.getApplicationMenu()?.getMenuItemById('about-harness')?.label !== '关于 DeepSeek Harness') {
+      throw new Error('desktop application menu does not expose Harness version information')
+    }
     mainWindow.close()
     if (mainWindow.isDestroyed() || desktopTray === null || desktopTray.isDestroyed()) {
       throw new Error('desktop tray did not retain the main window during smoke test')

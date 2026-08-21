@@ -11,7 +11,12 @@ on:
         description: desktop-v* tag created only when publish is enabled.
         required: true
         type: string
-        default: desktop-v1.0.3
+        default: desktop-v1.0.4-preview.1
+      prerelease:
+        description: Mark the GitHub Release as a preview instead of the latest stable desktop release.
+        required: true
+        type: boolean
+        default: true
       publish:
         description: Publish a desktop-v* GitHub Release for manual shell upgrades.
         required: true
@@ -108,4 +113,8 @@ jobs:
         run: |
           $tag = '${{ inputs.desktop-tag }}'
           if ($tag -notlike 'desktop-v*') { throw 'desktop-tag must start with desktop-v.' }
-          gh release create $tag dist-desktop/*.exe --target dev-windesktop --title $tag --notes 'Windows desktop shell installer. Harness updates independently in the application.'
+          $releaseFlags = @()
+          if ('${{ inputs.prerelease }}' -eq 'true') {
+            $releaseFlags += '--prerelease'
+          }
+          gh release create $tag dist-desktop/*.exe --target dev-windesktop --title $tag --notes 'Windows desktop shell installer. Harness updates independently in the application.' @releaseFlags
