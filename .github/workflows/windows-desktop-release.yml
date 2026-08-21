@@ -16,7 +16,7 @@ on:
         description: Exact desktop-v* tag matching the package version.
         required: true
         type: string
-        default: desktop-v1.0.4-preview.3
+        default: desktop-v1.5.0
   push:
     tags:
       - desktop-v*
