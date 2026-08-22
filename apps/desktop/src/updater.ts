@@ -13,6 +13,7 @@ import {
   compareRuntimeVersions,
   isRuntimeCompatible,
   runtimeId,
+  selectedRuntimeId,
   stageRuntime,
 } from './runtime-model.ts'
 
@@ -50,7 +51,8 @@ export class RuntimeUpdater {
   ) {}
 
   /**
-   * Compare the latest signed release with local selection and compatibility.
+   * Compare the latest signed release with the selected runtime (staged
+   * pending when present, otherwise active) and host compatibility.
    * @param state - current runtime selection.
    * @returns User-actionable update status.
    */
@@ -59,7 +61,8 @@ export class RuntimeUpdater {
     if (latest === null) return { kind: 'none' }
 
     let current: RuntimeManifest | null = null
-    if (state.active !== null) current = await this.store.readInstalledManifest(state.active)
+    const selected = selectedRuntimeId(state)
+    if (selected !== null) current = await this.store.readInstalledManifest(selected)
     if (current !== null && compareRuntimeVersions(latest.manifest, current) <= 0) return { kind: 'none' }
 
     const id = runtimeId(latest.manifest)
