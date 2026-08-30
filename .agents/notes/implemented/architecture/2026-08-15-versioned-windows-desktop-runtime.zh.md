@@ -22,7 +22,7 @@ Windows 产品需要一个可安装且允许用户选择安装目录的壳，同
 
 页面在同一份静态制品中提供中英文文案。客户端语言切换会同步更新可见文本、页面元数据、无障碍标签和对应语言的桌面端 README 链接，然后在本地记住所选语言，而不会增加网络依赖。
 
-[上游同步 workflow](../../../../.github/workflows/sync-upstream-runtime.yml) 每六小时从 fork 的默认 `master` 分支运行一次。它以合并方式把官方 `master` 同步到 fork 的 `master` 与 `dev-windesktop`，且不重写任一分支；发生冲突时本次运行停止。官方分支前进时，它会从合并后的精确提交触发运行时 release；手动触发则可在上游未变化时强制产生另一个打包修订。Workflow 会用 `dev-windesktop` 的打包工具操作单独检出的 `master`，因此生产依赖闭包与签名清单中的源提交只来自 `master`。每次运行都会比较 release 目标提交，因此分支同步后的后续 job 即使失败，缺失的 `master` release 仍可在下次运行时重试。
+[上游同步 workflow](../../../../.github/workflows/sync-upstream-runtime.yml) 定义在 fork 的默认分支上，并且每六小时运行一次。定时与手动运行只以合并方式把官方 `master` 同步到 fork 的 `master`，且不重写该分支；`master` push 则会打包该次 push 的精确提交。Workflow 会 fetch `dev-windesktop`，并把 `origin/dev-windesktop` 解析为只读的 tooling ref；它绝不检出、合并或推送桌面分支。官方分支前进时，它会从合并后的精确源码提交与固定工具提交触发运行时 release；手动触发则可在上游未变化时强制产生另一个打包修订。Workflow 会用这些打包工具操作单独的源码 checkout，因此生产依赖闭包与签名清单中的源提交只来自 `master`。每次运行都会比较 release 目标提交，因此 `master` 同步后的后续 job 即使失败，缺失的 release 仍可在下次运行时重试。
 
 [运行时 workflow](../../../../.github/workflows/windows-runtime-release.yml) 会把 `@deepseek-ai/dsh` 的生产闭包部署为无符号链接的 hoisted 树，复制官方 Node 24 可执行文件与 notices，启动暂存的 `dsh web` 以验证真实 Web 壳，然后归档准确的目录树。这个构建 job 不会获得签名机密。受保护且不检出仓库的 job 会验证清单字段集合、源提交、目标、修订、兼容性、完整文件集合、压缩包大小与 SHA-256，对该清单的准确字节签名，并且只在所有前置 job 成功后发布下一个未占用的修订。
 
@@ -54,7 +54,7 @@ Electron 用户数据与桌面专用 Harness home 位于 `%APPDATA%\DeepSeekHarn
 
 ## 验证
 
-针对性测试固定 REST 限流解析、冷却行为、Atom fallback、直接签名资源验证、更新诊断、版本字段映射、对话框与剪贴板文本、关闭拦截、明确退出放行、窗口恢复、运行时 `--no-open` 和可信外部链接过滤。Workflow 测试固定每六小时调度、仅合并的分支更新、准确的 `master` 源提交、自动修订选择、无机密构建、受保护且不检出仓库的签名、发布依赖，以及桌面端 package、tag 与 prerelease 状态一致性。打包后的桌面冒烟测试要求存在原生“关于”菜单项、证明运行时没有请求打开浏览器且脚本触发的外部弹窗被拒绝，并关闭真实 BrowserWindow；如果真实 Tray 未能在进程与日志收敛前保留窗口，测试就会失败。
+针对性测试固定 REST 限流解析、冷却行为、Atom fallback、直接签名资源验证、更新诊断、版本字段映射、对话框与剪贴板文本、关闭拦截、明确退出放行、窗口恢复、运行时 `--no-open` 和可信外部链接过滤。Workflow 测试固定每六小时调度、`master` push 的精确提交 release、定时运行仅合并式更新 `master`、只读选择桌面打包工具、自动修订选择、无机密构建、受保护且不检出仓库的签名、发布依赖，以及桌面端 package、tag 与 prerelease 状态一致性。打包后的桌面冒烟测试要求存在原生“关于”菜单项、证明运行时没有请求打开浏览器且脚本触发的外部弹窗被拒绝，并关闭真实 BrowserWindow；如果真实 Tray 未能在进程与日志收敛前保留窗口，测试就会失败。
 
 ## 考虑过的替代方案
 
@@ -64,7 +64,9 @@ Electron 用户数据与桌面专用 Harness home 位于 `%APPDATA%\DeepSeekHarn
 
 **把上游 npm 包或 release 直接下载到桌面端。** 拒绝，因为上游不发布这种经过签名的自包含 Windows 运行时格式，而在客户端构建包会失去隔离验证与回滚制品。
 
-**把 fork 分支强制重置到官方 `master`。** 拒绝，因为这会删除 fork 自有的 workflow 与桌面端历史。仅合并的同步方式会保留这些历史，并让冲突明确可见，而不是静默丢弃任一侧。
+**把 fork 分支强制重置到官方 `master`。** 拒绝，因为这会删除 fork 自有的 workflow 与桌面端历史。Fork `master` 使用仅合并式同步，`dev-windesktop` 则只通过经过审核的桌面端工作发生变更。
+
+**自动把官方 `master` 合入 `dev-windesktop`。** 拒绝，因为运行时打包只会从该分支把工具目录复制到单独的源码 checkout。把上游合入桌面分支会让无关的源码冲突阻塞无人值守发布，还可能在没有提供运行时构建输入的情况下改变经过审核的壳代码。
 
 **把签名机密交给检出仓库的构建 job。** 拒绝，因为自动同步的源码及其依赖脚本不应获得长期 release 密钥。不检出仓库的签名 job 只接收制品，并独立验证清单与压缩包的一致性。
 
@@ -96,7 +98,7 @@ Electron 用户数据与桌面专用 Harness home 位于 `%APPDATA%\DeepSeekHarn
 
 用户可以在离线状态下区分正在运行的 Harness 版本与桌面壳版本，并复制诊断所需的已签名 release 标识。
 
-定时 workflow 必须位于 fork 的默认分支，GitHub Actions 需要具备分支与 release 更新的写权限；要实现无人值守，`runtime-release` environment 必须提供签名机密且不设置必需审核人。合并、构建、冒烟测试、签名或发布失败都会阻止新的运行时 release；如果后续 release job 失败，分支同步可能已经完成。
+该 workflow 必须位于 fork 的默认分支，GitHub Actions 需要具备更新 `master` 与 release 的写权限；要实现无人值守，`runtime-release` environment 必须提供签名机密且不设置必需审核人。`master` 合并、构建、冒烟测试、签名或发布失败都会阻止新的运行时 release；如果后续 release job 失败，`master` 同步可能已经完成。维护者可以按顺序把经过审核的上游版本推送到 `master`，从而发布每个精确版本，而不是把多次上游前进合并成最新上游头部。Tooling ref 会留在 `dev-windesktop`，因此打包变更必须通过有意的桌面分支更新完成；陈旧工具可能导致构建失败，但上游同步绝不会修改桌面端源码。
 
 Windows 标题栏、应用菜单、对话框与 Web 页面会跟随同一个实时主题，且页面不会获得具备特权的 Electron API。供此壳使用的运行时 release 会保留两个主题 body 属性；缺少偏好属性的旧运行时仍会同步解析后的调色板，但无法区分 `system` 与显式选择。
 

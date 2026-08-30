@@ -1,6 +1,9 @@
 name: Sync upstream and release Windows runtime
 
 on:
+  push:
+    branches:
+      - master
   schedule:
     - cron: '17 */6 * * *'
   workflow_dispatch:
@@ -20,7 +23,7 @@ concurrency:
 
 jobs:
   sync:
-    name: Merge official master without rewriting fork history
+    name: Select runtime source and pin desktop tooling
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -30,35 +33,37 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: master
+          ref: ${{ github.event_name == 'push' && github.sha || 'master' }}
           fetch-depth: 0
 
-      - name: Merge official master into fork branches
+      - name: Select runtime source and pin desktop tooling
         id: sync
         env:
+          EVENT_NAME: ${{ github.event_name }}
           FORCE_RELEASE: ${{ inputs.force-release || false }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git remote add upstream https://github.com/deepseek-ai/deepseek-harness.git
-          git fetch --no-tags upstream master
-          upstream_sha=$(git rev-parse upstream/master)
 
-          if ! git merge-base --is-ancestor "$upstream_sha" HEAD; then
-            git merge --no-edit --no-ff "$upstream_sha"
-            git push origin HEAD:master
+          if [ "$EVENT_NAME" = 'push' ]; then
+            source_sha=$(git rev-parse HEAD)
+          else
+            git remote add upstream https://github.com/deepseek-ai/deepseek-harness.git
+            git fetch --no-tags upstream master
+            upstream_sha=$(git rev-parse upstream/master)
+            if ! git merge-base --is-ancestor "$upstream_sha" HEAD; then
+              git merge --no-edit --no-ff "$upstream_sha"
+              git push origin HEAD:master
+            fi
+            source_sha=$(git rev-parse HEAD)
           fi
-          source_sha=$(git rev-parse HEAD)
 
           git fetch --no-tags origin dev-windesktop
-          git checkout -B dev-windesktop origin/dev-windesktop
-          if ! git merge-base --is-ancestor "$upstream_sha" HEAD; then
-            git merge --no-edit "$upstream_sha"
-            git push origin HEAD:dev-windesktop
-          fi
-          tooling_sha=$(git rev-parse HEAD)
+          # Runtime packaging copies tooling into a separate source checkout;
+          # upstream synchronization must not mutate the desktop branch.
+          tooling_sha=$(git rev-parse origin/dev-windesktop)
 
           release_targets=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].target_commitish')
           release_needed=false

@@ -420,7 +420,7 @@ describe('Windows runtime automation', () => {
     expect(builder).toContain('differentialPackage: true')
   })
 
-  it('merge-syncs official master without rewriting either fork branch', () => {
+  it('packages exact master pushes and merge-syncs only the runtime branch', () => {
     const workflow = loadWorkflow('.github/workflows/sync-upstream-runtime.yml')
     const schedule = workflow.on
     const sync = workflowJob(workflow, 'sync')
@@ -434,6 +434,7 @@ describe('Windows runtime automation', () => {
     }
 
     expect(schedule.schedule).toEqual([{ cron: '17 */6 * * *' }])
+    expect(schedule.push).toEqual({ branches: ['master'] })
     expect(workflow.permissions.contents).toBe('write')
     expect(workflow.concurrency).toEqual({
       group: 'sync-upstream-windows-runtime',
@@ -442,23 +443,29 @@ describe('Windows runtime automation', () => {
 
     const syncSteps = (sync.steps as unknown[]).filter(isRecord)
     const checkout = syncSteps.find(step => step.uses === 'actions/checkout@v6')
-    const merge = syncSteps.find(step => step.name === 'Merge official master into fork branches')
-    expect(checkout).toMatchObject({ with: { ref: 'master', 'fetch-depth': 0 } })
-    if (!isRecord(merge) || typeof merge.run !== 'string') {
-      throw new TypeError('Windows runtime sync must define its merge step')
+    const syncStep = syncSteps.find(step => step.name === 'Select runtime source and pin desktop tooling')
+    expect(checkout).toMatchObject({
+      with: {
+        ref: "${{ github.event_name == 'push' && github.sha || 'master' }}",
+        'fetch-depth': 0,
+      },
+    })
+    if (!isRecord(syncStep) || typeof syncStep.run !== 'string') {
+      throw new TypeError('Windows runtime sync must define its sync step')
     }
-    expect(merge.run).toContain('https://github.com/deepseek-ai/deepseek-harness.git')
-    expect(merge.run.match(/git merge-base --is-ancestor/g)).toHaveLength(2)
-    expect(merge.run).toContain('git merge --no-edit --no-ff "$upstream_sha"')
-    expect(merge.run).toContain('git push origin HEAD:master')
-    expect(merge.run).toContain('source_sha=$(git rev-parse HEAD)')
-    expect(merge.run.indexOf('source_sha=$(git rev-parse HEAD)'))
-      .toBeLessThan(merge.run.indexOf('git checkout -B dev-windesktop'))
-    expect(merge.run).toContain('git push origin HEAD:dev-windesktop')
-    expect(merge.run).toContain('tooling_sha=$(git rev-parse HEAD)')
-    expect(merge.run).toContain("--jq '.[].target_commitish'")
-    expect(merge.run).toContain('grep -Fqx "$source_sha"')
-    expect(merge.run).not.toContain('--force')
+    expect(syncStep.run).toContain('https://github.com/deepseek-ai/deepseek-harness.git')
+    expect(syncStep.run).toContain("if [ \"$EVENT_NAME\" = 'push' ]")
+    expect(syncStep.run.match(/git merge-base --is-ancestor/g)).toHaveLength(1)
+    expect(syncStep.run).toContain('git merge --no-edit --no-ff "$upstream_sha"')
+    expect(syncStep.run).toContain('git push origin HEAD:master')
+    expect(syncStep.run).toContain('source_sha=$(git rev-parse HEAD)')
+    expect(syncStep.run).toContain('git fetch --no-tags origin dev-windesktop')
+    expect(syncStep.run).toContain('tooling_sha=$(git rev-parse origin/dev-windesktop)')
+    expect(syncStep.run).not.toContain('git checkout -B dev-windesktop')
+    expect(syncStep.run).not.toContain('git push origin HEAD:dev-windesktop')
+    expect(syncStep.run).toContain("--jq '.[].target_commitish'")
+    expect(syncStep.run).toContain('grep -Fqx "$source_sha"')
+    expect(syncStep.run).not.toContain('--force')
 
     expect(release).toMatchObject({
       needs: 'sync',

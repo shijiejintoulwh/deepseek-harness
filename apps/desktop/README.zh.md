@@ -14,7 +14,7 @@
 
 桌面包保持私有，并有意排除在 dsh 的 npm 发布族之外。
 
-[上游同步 workflow](../../.github/workflows/sync-upstream-runtime.yml) 每六小时从 fork 的默认 `master` 分支运行一次。它以合并方式把 `deepseek-ai/deepseek-harness` 同步到 fork 的 `master` 与 `dev-windesktop`，且不重写任一分支；官方 `master` 前进时，它会用合并后的精确提交调用运行时 workflow，并自动发布下一个打包修订。打包工具来自 `dev-windesktop`，生产依赖闭包与签名清单中的源提交则只来自 `master`。发生冲突或任何构建、冒烟测试、签名、发布失败时，本次 release 会停止；下次运行会识别已经同步但没有对应 release 目标的 `master` 提交，并重试未完成的发布。
+[上游同步 workflow](../../.github/workflows/sync-upstream-runtime.yml) 定义在 fork 的默认分支上，并且每六小时运行一次。定时与手动运行只以合并方式把 `deepseek-ai/deepseek-harness` 同步到 fork 的 `master`，且不重写该分支；`master` push 则会打包该次 push 的精确提交。打包工具以只读方式固定为 `dev-windesktop` 提交；workflow 绝不检出、合并或推送这个桌面分支。生产依赖闭包与签名清单中的源提交只来自 `master`。发生冲突或任何构建、冒烟测试、签名、发布失败时，本次 release 会停止；下次运行会识别已经同步但没有对应 release 目标的 `master` 提交，并重试未完成的发布。
 
 全自动运行要求两个 workflow 文件均位于默认分支、GitHub Actions 的 workflow 权限设为可读写，并在 `runtime-release` environment 中配置 `RUNTIME_SIGNING_PRIVATE_KEY_PEM`。如果为该 environment 设置必需审核人，签名会有意恢复为人工批准步骤。
 
