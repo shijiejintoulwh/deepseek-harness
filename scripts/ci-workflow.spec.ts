@@ -683,6 +683,7 @@ describe('Windows runtime automation', () => {
     expect(buildText.indexOf('git rev-parse HEAD')).toBeLessThan(buildText.indexOf('pnpm/action-setup@v4'))
     expect(buildText).toContain('Build and smoke-test runtime')
     expect(buildText).toContain('Copy-Item -Recurse -Force ../tooling/scripts/runtime-release scripts/runtime-release')
+    expect(buildText).toContain('Copy-Item -Force ../tooling/scripts/release/process.ts scripts/release/process.ts')
     expect(buildText).toContain('tsx scripts/runtime-release/build-windows-runtime.ts')
     expect(buildText).toContain('working-directory":"source')
     expect(buildText).not.toContain('RUNTIME_SIGNING_PRIVATE_KEY_PEM')

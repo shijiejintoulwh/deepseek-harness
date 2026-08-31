@@ -133,6 +133,9 @@ jobs:
           # invoke through a package script so the build runs against the source
           # checkout (the reviewed commit) rather than the tooling tree.
           Copy-Item -Recurse -Force ../tooling/scripts/runtime-release scripts/runtime-release
+          # The packaging script also uses the tooling branch's synchronous
+          # process helper; older runtime tags may not export that helper yet.
+          Copy-Item -Force ../tooling/scripts/release/process.ts scripts/release/process.ts
           # The manifest spec imports apps/desktop (dev-windesktop only) for tooling CI
           # coverage; it is not a build input, so the source type check never sees it.
           Get-ChildItem -Path scripts/runtime-release -Filter *.spec.ts | Remove-Item -Force
