@@ -28,7 +28,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import type { Readable } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 import { parseArgs } from 'node:util'
-import { isEntry, run, capture } from '../release/process.ts'
+import { isEntry, run, capture } from './process.ts'
 import { renderRuntimeManifest, runtimeManifest, signRuntimeManifest } from './manifest.ts'
 
 type SmokeChild = ChildProcessByStdio<null, Readable, Readable>
