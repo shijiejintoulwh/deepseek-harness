@@ -55,6 +55,10 @@ jobs:
             upstream_sha=$(git rev-parse upstream/master)
             if ! git merge-base --is-ancestor "$upstream_sha" HEAD; then
               git merge --no-edit --no-ff "$upstream_sha"
+              # Keep fork-owned automation out of the upstream merge commit;
+              # GITHUB_TOKEN has contents:write but cannot update workflow files.
+              git checkout HEAD^ -- .github/workflows
+              git diff --cached --quiet -- .github/workflows || git commit --amend --no-edit
               git push origin HEAD:master
             fi
             source_sha=$(git rev-parse HEAD)
