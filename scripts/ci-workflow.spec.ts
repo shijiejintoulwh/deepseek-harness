@@ -603,6 +603,8 @@ describe('Windows runtime automation', () => {
     expect(syncStep.run).toContain("if [ \"$EVENT_NAME\" = 'push' ]")
     expect(syncStep.run.match(/git merge-base --is-ancestor/g)).toHaveLength(1)
     expect(syncStep.run).toContain('git merge --no-edit --no-ff "$upstream_sha"')
+    expect(syncStep.run).toContain('git checkout HEAD^ -- .github/workflows')
+    expect(syncStep.run).toContain('git diff --cached --quiet -- .github/workflows || git commit --amend --no-edit')
     expect(syncStep.run).toContain('git push origin HEAD:master')
     expect(syncStep.run).toContain('source_sha=$(git rev-parse HEAD)')
     expect(syncStep.run).toContain('git fetch --no-tags origin dev-windesktop')
