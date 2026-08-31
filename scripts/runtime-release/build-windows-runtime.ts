@@ -32,6 +32,43 @@ import { isEntry, run, capture } from './process.ts'
 import { renderRuntimeManifest, runtimeManifest, signRuntimeManifest } from './manifest.ts'
 
 type SmokeChild = ChildProcessByStdio<null, Readable, Readable>
+type FetchRequest = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
+
+/** Return the first cookie pair from a Node response's Set-Cookie headers. */
+function responseCookie(response: Response): string | undefined {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] }
+  const values = headers.getSetCookie?.() ?? []
+  const fallback = response.headers.get('set-cookie')
+  const candidates = values.length === 0 && fallback !== null ? [fallback] : values
+  for (const value of candidates) {
+    const separator = value.indexOf(';')
+    const cookie = value.slice(0, separator === -1 ? undefined : separator).trim()
+    if (cookie.includes('=')) return cookie
+  }
+  return undefined
+}
+
+/** Exchange the printed launch token, then verify the authenticated Web shell. */
+export async function probeWebShell(url: URL, request: FetchRequest = fetch): Promise<boolean> {
+  const launch = await request(url, { redirect: 'manual' })
+  if (launch.status !== 303 || launch.headers.get('location') !== '/') {
+    await launch.arrayBuffer()
+    return false
+  }
+  const cookie = responseCookie(launch)
+  await launch.arrayBuffer()
+  if (cookie === undefined) {
+    return false
+  }
+  const cleanUrl = new URL(url)
+  cleanUrl.search = ''
+  const response = await request(cleanUrl, { headers: { cookie }, redirect: 'error' })
+  if (response.status !== 200) {
+    await response.arrayBuffer()
+    return false
+  }
+  return (await response.text()).includes('__DSH_BOOT__')
+}
 
 /** Parsed build inputs. */
 interface BuildOptions {
@@ -249,7 +286,7 @@ async function smokeRuntime(runtimeDirectory: string): Promise<void> {
   environment.DSH_AGENTS_HOME = smokeAgentsHome
   const child = spawn(
     join(runtimeDirectory, 'node', 'node.exe'),
-    [join(runtimeDirectory, 'app', 'lib', 'bin.js'), 'web', '--host', '127.0.0.1', '--port', '0'],
+    [join(runtimeDirectory, 'app', 'lib', 'bin.js'), 'web', '--host', '127.0.0.1', '--port', '0', '--no-open'],
     {
       cwd: join(runtimeDirectory, 'app'),
       env: environment,
@@ -297,12 +334,8 @@ async function smokeRuntime(runtimeDirectory: string): Promise<void> {
     let healthy = false
     while (Date.now() < deadline) {
       try {
-        const response = await fetch(parsed, { redirect: 'error' })
-        const body = await response.text()
-        if (response.status === 200 && body.includes('__DSH_BOOT__')) {
-          healthy = true
-          break
-        }
+        healthy = await probeWebShell(parsed)
+        if (healthy) break
       } catch {
         // Startup probes retry until the bounded deadline.
       }
