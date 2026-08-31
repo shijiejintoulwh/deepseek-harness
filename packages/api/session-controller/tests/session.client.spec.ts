@@ -5,7 +5,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 import { RemoteStreamCarrierError } from '@deepseek-ai/dsh-api-gateway/client'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import { Session, type SessionOptions } from '../src/client/sessions/session.ts'
+import { JUMP_PAGE_MESSAGES, Session, type SessionOptions } from '../src/client/sessions/session.ts'
 import { FakeApiClient, deferred, err, fakeRemote, ok } from './fake-api.client.ts'
 import { entries, ev, historyValue, plainTurn } from './event-script.client.ts'
 
@@ -254,6 +254,145 @@ describe('paging', () => {
     }
   })
 
+  it('loadThrough pages repeatedly until the window covers the target seq', async () => {
+    const oldest = plainTurn(0, 0, '最旧问', '最旧答')
+    const middle = plainTurn(6, 1, '中问', '中答')
+    const newest = plainTurn(12, 2, '新问', '新答')
+    const { api, session } = makeSession()
+    api.onHistory = (payload) => {
+      if (payload.beforeSeq === undefined) return histResponse(newest, true)
+      return payload.beforeSeq === 12 ? histResponse(middle, true) : histResponse(oldest, false)
+    }
+    await session.open()
+
+    const gate = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = (payload) => {
+      api.onHistory = payload2 => payload2.beforeSeq === 12 ? histResponse(middle, true) : histResponse(oldest, false)
+      void payload
+      return gate.promise
+    }
+    const jump = session.loadThrough(0)
+    expect(session.getSnapshot().loadingOlder).toBe(true)
+    gate.resolve(ok(historyValue(middle, true)))
+    await jump
+    const snapshot = session.getSnapshot()
+    expect(snapshot.loadingOlder).toBe(false)
+    expect(eventSeqs(session)).toEqual([...oldest, ...middle, ...newest].map(event => event.seq))
+    expect(api.callsOf('session.history')).toMatchObject([
+      { beforeSeq: 12, maxMessages: JUMP_PAGE_MESSAGES },
+      { beforeSeq: 6, maxMessages: JUMP_PAGE_MESSAGES },
+    ])
+  })
+
+  it('loadThrough is a no-op when the window already covers the target or the session is not open', async () => {
+    const { api, session } = makeSession()
+    await session.loadThrough(0) // cold: no-op
+    expect(api.calls).toEqual([])
+    api.onHistory = () => histResponse(plainTurn(6, 1, 'x', 'y'), true)
+    await session.open()
+    const calls = api.calls.length
+    await session.loadThrough(6) // baseSeq is already 6
+    await session.loadThrough(9) // inside the window
+    expect(api.calls.length).toBe(calls)
+  })
+
+  it('loadThrough retargets a running jump to the lowest requested seq and shares its completion', async () => {
+    const oldest = plainTurn(0, 0, 'a', 'b')
+    const middle = plainTurn(6, 1, 'c', 'd')
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(12, 2, 'e', 'f'), true)
+    await session.open()
+
+    const gate = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => {
+      api.onHistory = () => histResponse(oldest, false)
+      return gate.promise
+    }
+    const first = session.loadThrough(6)
+    const second = session.loadThrough(0)
+    gate.resolve(ok(historyValue(middle, true)))
+    await Promise.all([first, second])
+    expect(eventSeqs(session)).toEqual([...oldest, ...middle].map(event => event.seq).concat([12, 13, 14, 15, 16, 17]))
+    expect(api.callsOf('session.history')).toHaveLength(2)
+  })
+
+  it('loadThrough refused by a busy pager leaves no target behind for later jumps', async () => {
+    const middle = plainTurn(6, 1, 'c', 'd')
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(12, 2, 'e', 'f'), true)
+    await session.open()
+
+    // A plain single-page pull holds the busy flag while the jump is refused.
+    const gate = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => gate.promise
+    const older = session.loadOlder()
+    await session.loadThrough(0) // refused: must not park seq 0 anywhere
+    gate.resolve(ok(historyValue(middle, true)))
+    await older
+
+    // A later jump to a nearer seq pages exactly to it — a leaked 0 target
+    // would keep pulling three-event pages all the way to the head.
+    api.onHistory = (payload) => {
+      const start = ((payload as { beforeSeq?: number }).beforeSeq ?? 0) - 3
+      return histResponse(
+        [ev.user(start, `u${String(start)}`), ev.user(start + 1, `u${String(start + 1)}`), ev.user(start + 2, `u${String(start + 2)}`)],
+        start > 0,
+      )
+    }
+    await session.loadThrough(4)
+    // Covered at seq 3 (≤ 4) after one page; a leaked 0 target would add a
+    // third call at beforeSeq 3 and pull the head to 0.
+    expect(api.callsOf('session.history').map(call => (call as { beforeSeq?: number }).beforeSeq))
+      .toEqual([12, 6])
+    expect(eventSeqs(session)[0]).toBe(3)
+  })
+
+  it('loadThrough stops paging when the event stream generation moves mid-loop', async () => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(12, 2, 'x', 'y'), true)
+    await session.open()
+
+    const gate = deferred<Awaited<ReturnType<FakeApiClient['onHistory']>>>()
+    api.onHistory = () => gate.promise
+    const jump = session.loadThrough(0)
+    // The address is rebuilt while the first page is in flight.
+    api.onHistory = () => histResponse(plainTurn(12, 2, 'x', 'y'), true)
+    const rebuilt = session.resync()
+    gate.resolve(ok(historyValue(plainTurn(6, 1, 'c', 'd'), true)))
+    await jump
+    await rebuilt
+    // The stale loop must not page the new generation toward its old target:
+    // history calls are the gated page and the resync tail only.
+    expect(api.callsOf('session.history')).toHaveLength(1)
+    expect(session.getSnapshot().loadingOlder).toBe(false)
+  })
+
+  it('loadThrough stops on a page that makes no progress instead of looping', async () => {
+    const { api, session } = makeSession()
+    api.onHistory = payload => payload.beforeSeq === undefined
+      ? histResponse(plainTurn(12, 2, 'x', 'y'), true)
+      : histResponse([], true) // empty page still claiming more history
+    await session.open()
+    await session.loadThrough(0)
+    expect(session.getSnapshot().loadingOlder).toBe(false)
+    expect(api.callsOf('session.history')).toHaveLength(1)
+  })
+
+  it('loadThrough fails soft on a thrown page and clears its busy state', async () => {
+    const { api, session } = makeSession()
+    api.onHistory = () => histResponse(plainTurn(12, 2, 'x', 'y'), true)
+    await session.open()
+    api.onHistory = () => Promise.reject(new Error('page wire down'))
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      await session.loadThrough(0)
+      expect(errorSpy).toHaveBeenCalled()
+      expect(session.getSnapshot().loadingOlder).toBe(false)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
   it('ignores loadOlder while one is in flight (single request)', async () => {
     const { api, session } = makeSession()
     api.onHistory = () => histResponse(plainTurn(6, 1, 'x', 'y'), true)
@@ -318,6 +457,32 @@ describe('prompt and cancel errors', () => {
     })
   })
 
+  it('forwards continuation image parts to the subagent prompt Remote unstripped', async () => {
+    const api = new FakeApiClient()
+    const session = new Session(SID, fakeRemote(api), {
+      address: { parentSessionId: PARENT, childSessionId: SID, mode: 'continuable' },
+      parentAvailable: true,
+    })
+    await session.open()
+    const content = [
+      { type: 'text' as const, text: '看这张图' },
+      { type: 'image' as const, mediaType: 'image/png' as const, data: 'aGk=', name: 'shot.png' },
+    ]
+    const prompted = await session.prompt(content, 'queue')
+
+    expect(prompted).toEqual({ ok: true, value: { accepted: true } })
+    expect(api.callsOf('subagents.prompt')).toEqual([
+      {
+        requestId: expect.any(String) as unknown as string,
+        parentSessionId: PARENT, childSessionId: SID,
+        mode: 'continuable',
+        content,
+        clientTimeZone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
+      },
+    ])
+    expect(session.getSnapshot().promptError).toBeNull()
+  })
+
   it('lands an interrupt business failure in promptError with op=stop', async () => {
     const api = new FakeApiClient()
     api.onSubagentInterrupt = () => Promise.resolve(err(new RemoteError('subagent/unauthorized', 'nope', { childSessionId: SID })))
@@ -366,13 +531,8 @@ describe('prompt and cancel errors', () => {
     expect(api.callsOf('session.cancel')).toEqual([])
   })
 
-  it('delivers an image continuation to the Host, which refuses it', async () => {
+  it('delivers an image continuation to the Host without narrowing its upload parts', async () => {
     const api = new FakeApiClient()
-    api.onSubagentPrompt = () => Promise.resolve(err(new RemoteError(
-      'subagent/attachment-unsupported',
-      'subagent continuation does not accept images',
-      { childSessionId: SID, reason: 'SUBAGENT_IMAGE_UNSUPPORTED' },
-    )))
     const session = new Session(SID, fakeRemote(api), {
       address: { parentSessionId: PARENT, childSessionId: SID, mode: 'continuable' },
     })
@@ -382,11 +542,7 @@ describe('prompt and cancel errors', () => {
       'queue',
     )
 
-    expect(prompted).toMatchObject({
-      ok: false,
-      error: { code: 'subagent/attachment-unsupported', details: { reason: 'SUBAGENT_IMAGE_UNSUPPORTED' } },
-    })
-    // The image reaches the wire unfiltered: refusing it is the Host's call.
+    expect(prompted).toEqual({ ok: true, value: { accepted: true } })
     expect(api.callsOf('subagents.prompt')).toMatchObject([
       { content: [{ type: 'text' }, { type: 'image', mediaType: 'image/png', data: 'AA==' }] },
     ])

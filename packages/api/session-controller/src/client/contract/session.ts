@@ -27,6 +27,8 @@ export type PendingSubmissionRetirement =
 
 /** Input registering one local submission echo ahead of its prompt call. */
 export interface BeginSubmissionInput {
+  /** Delivery mode used with the upcoming prompt. */
+  readonly mode: 'queue' | 'steer'
   /** Prompt text exactly as the upcoming prompt will send it. */
   readonly text: string
   /** Ordered image previews matching the upcoming prompt's image parts. */
@@ -117,6 +119,15 @@ export interface ISession {
    * @returns completion; failures land in snapshot.openState/loadingOlder.
    */
   loadOlder(): Promise<void>
+  /**
+   * Page history backwards until the window covers `seq` (inclusive) — the
+   * turn-jump loader. Repeated calls while a jump is paging lower its shared
+   * target and return the in-flight completion; `snapshot.loadingOlder` is
+   * the busy signal for the whole jump.
+   * @param seq - durable event seq the window must reach (a turn's `turn/start` seq).
+   * @returns completion once covered, exhausted, superseded, or failed soft.
+   */
+  loadThrough(seq: number): Promise<void>
   /**
    * Execute one slash-command line against this session's agent — pure
    * admission semantics (the host executor durably logs the lifecycle).
