@@ -480,6 +480,10 @@ describe('Windows runtime automation', () => {
         'min-desktop-version': '1.0.0',
         publish: true,
       },
+      // A called reusable workflow cannot see repository-level secrets unless
+      // the caller forwards them; without this the sign job builds an empty
+      // RUNTIME_SIGNING_PRIVATE_KEY_PEM and every automated release fails.
+      secrets: 'inherit',
     })
   })
 
