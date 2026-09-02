@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { launchRuntime } from '../src/runtime-process.ts'
 
-async function fakeRuntime(mode: 'current' | 'legacy'): Promise<string> {
+async function fakeRuntime(mode: 'current' | 'legacy' | 'token'): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-runtime-process-'))
   await mkdir(join(root, 'node'), { recursive: true })
   await mkdir(join(root, 'app', 'lib'), { recursive: true })
@@ -21,18 +21,30 @@ if (mode === 'legacy' && args.includes('--no-open')) {
   console.error("error: unknown option '--no-open'")
   process.exit(1)
 }
-const expected = ['web', '--host', '127.0.0.1', '--port', '0'].concat(mode === 'current' ? ['--no-open'] : [])
+const expected = ['web', '--host', '127.0.0.1', '--port', '0']
+  .concat(mode === 'legacy' ? [] : ['--no-open'])
 if (JSON.stringify(args) !== JSON.stringify(expected)) {
   console.error('unexpected runtime arguments: ' + JSON.stringify(args))
   process.exit(2)
 }
-const server = http.createServer((_request, response) => {
-  response.writeHead(200, { 'content-type': 'text/html' })
-  response.end('<script>window.__DSH_BOOT__={}</script>')
+const server = http.createServer((request, response) => {
+  if (mode !== 'token') {
+    response.writeHead(200, { 'content-type': 'text/html' })
+    response.end('<script>window.__DSH_BOOT__={}</script>')
+    return
+  }
+  if (request.headers.cookie === 'dsh_launch=test-token') {
+    response.writeHead(200, { 'content-type': 'text/html' })
+    response.end('<script>window.__DSH_BOOT__={}</script>')
+    return
+  }
+  response.writeHead(303, { location: '/', 'set-cookie': 'dsh_launch=test-token; Path=/' })
+  response.end()
 })
 server.listen(0, '127.0.0.1', () => {
   const address = server.address()
-  console.log('dsh web: http://127.0.0.1:' + address.port + '/')
+  const query = mode === 'token' ? '?token=abc' : ''
+  console.log('dsh web: http://127.0.0.1:' + address.port + '/' + query)
 })
 `, 'utf8')
   return root
@@ -67,6 +79,21 @@ describe('desktop runtime process', () => {
     await expect(readFile(join(root, 'app', 'lib', 'launches.jsonl'), 'utf8')).resolves.toBe(
       '["web","--host","127.0.0.1","--port","0","--no-open"]\n'
       + '["web","--host","127.0.0.1","--port","0"]\n',
+    )
+  })
+
+  it('completes the launch-token handshake before accepting the Web shell', async () => {
+    const root = await fakeRuntime('token')
+    const runtime = await launchRuntime({
+      runtimeDirectory: root,
+      harnessHome: join(root, 'home'),
+      agentsHome: join(root, 'agents'),
+      timeoutMs: 10_000,
+    })
+    expect(new URL(runtime.url).search).toBe('?token=abc')
+    await runtime.stop()
+    await expect(readFile(join(root, 'app', 'lib', 'launches.jsonl'), 'utf8')).resolves.toBe(
+      '["web","--host","127.0.0.1","--port","0","--no-open"]\n',
     )
   })
 })

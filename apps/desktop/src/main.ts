@@ -300,14 +300,31 @@ async function ensureSeedRuntime(store: RuntimeStore, state: RuntimeState): Prom
   return seeded
 }
 
+/** Rejection recorded when a pending candidate is dropped after repeated launch failures. */
+interface RuntimeRejection {
+  /** Candidate id that failed to launch. */
+  readonly candidate: string
+  /** Runtime id the host fell back to, or null when none remains. */
+  readonly fallback: string | null
+  /** First launch failure description. */
+  readonly reason: string
+}
+
 /** Launch the selected candidate, retry it once, then fall back to active. */
 async function startSelectedRuntime(
   store: RuntimeStore,
   initialState: RuntimeState,
   harnessHome: string,
   agentsHome: string,
-): Promise<{ runtime: RunningRuntime; manifest: RuntimeManifest; state: RuntimeState; selectedId: string }> {
+): Promise<{
+  runtime: RunningRuntime
+  manifest: RuntimeManifest
+  state: RuntimeState
+  selectedId: string
+  rejection: RuntimeRejection | null
+}> {
   let state = initialState
+  let rejection: RuntimeRejection | null = null
   for (;;) {
     const selected = selectedRuntimeId(state)
     if (selected === null) throw new Error('no Harness runtime is selected')
@@ -320,11 +337,20 @@ async function startSelectedRuntime(
         timeoutMs: RUNTIME_START_TIMEOUT_MS,
         onOutput: writeRuntimeOutput,
       })
-      return { runtime, manifest, state, selectedId: selected }
+      return { runtime, manifest, state, selectedId: selected, rejection }
     } catch (error) {
       if (state.pending === null) throw error
+      const reason = error instanceof Error ? error.message : String(error)
+      writeRuntimeOutput('stderr', `pending Harness runtime ${selected} failed to start: ${reason}\n`)
       state = recordPendingFailure(state, MAX_PENDING_LAUNCH_FAILURES)
       await store.writeState(state)
+      if (state.pending === null) {
+        writeRuntimeOutput(
+          'stderr',
+          `pending Harness runtime ${selected} rejected after repeated launch failures; continuing with ${state.active ?? 'no active runtime'}\n`,
+        )
+        rejection = { candidate: selected, fallback: state.active, reason }
+      }
     }
   }
 }
@@ -891,6 +917,18 @@ async function bootstrap(): Promise<void> {
   )
   installMenu(mainWindow, versionInfo)
   installTray(mainWindow)
+
+  if (started.rejection !== null && !smokeTest) {
+    await dialog.showMessageBox(mainWindow, {
+      type: 'warning',
+      message: 'Harness 更新未能激活',
+      detail: `新版本 ${started.rejection.candidate} 连续启动失败，已回退到 ${started.rejection.fallback ?? '无可用版本'}。\n`
+        + `原因：${started.rejection.reason}\n`
+        + '详情见用户数据目录 logs\\runtime.log。',
+      buttons: ['确定'],
+      noLink: true,
+    })
+  }
 
   if (smokeTest) {
     if (Menu.getApplicationMenu()?.getMenuItemById('about-harness')?.label !== '关于 DeepSeek Harness') {

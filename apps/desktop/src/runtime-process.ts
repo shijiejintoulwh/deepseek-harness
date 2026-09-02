@@ -84,15 +84,56 @@ function observeLines(
   })
 }
 
+/** First session cookie pair from a response's Set-Cookie headers, if any. */
+function responseCookie(response: Response): string | null {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] }
+  const values = headers.getSetCookie?.() ?? []
+  const fallback = response.headers.get('set-cookie')
+  const candidates = values.length === 0 && fallback !== null ? [fallback] : values
+  for (const value of candidates) {
+    const separator = value.indexOf(';')
+    const cookie = value.slice(0, separator === -1 ? undefined : separator).trim()
+    if (cookie.includes('=')) return cookie
+  }
+  return null
+}
+
+/**
+ * Prove the Web shell is ready through the runtime's launch-token handshake.
+ * Runtimes since 0.1.2-alpha.3 answer the announced token URL with 303 to `/`
+ * plus a session cookie; older runtimes serve the boot marker directly.
+ * @param url - exact loopback URL announced by the runtime.
+ * @returns True when the reachable page carries the boot marker.
+ */
+async function probeWebShell(url: string): Promise<boolean> {
+  const launch = await fetch(url, { redirect: 'manual' })
+  if (launch.status === 303 && launch.headers.get('location') === '/') {
+    const cookie = responseCookie(launch)
+    await launch.arrayBuffer()
+    if (cookie === null) return false
+    const authenticated = new URL(url)
+    authenticated.search = ''
+    const response = await fetch(authenticated, { headers: { cookie }, redirect: 'error' })
+    if (response.status !== 200) {
+      await response.arrayBuffer()
+      return false
+    }
+    return (await response.text()).includes('__DSH_BOOT__')
+  }
+  if (launch.status !== 200) {
+    await launch.arrayBuffer()
+    return false
+  }
+  return (await launch.text()).includes('__DSH_BOOT__')
+}
+
 /** Wait until the served page proves the Harness Web shell is ready. */
 async function waitForHealth(url: string, deadline: number): Promise<void> {
   let lastError: unknown
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { redirect: 'error' })
-      const text = await response.text()
-      if (response.status === 200 && text.includes('__DSH_BOOT__')) return
-      lastError = new Error(`Harness health response was ${response.status}`)
+      if (await probeWebShell(url)) return
+      lastError = new Error('Harness health response did not prove the Web shell')
     } catch (error) {
       lastError = error
     }

@@ -52,7 +52,7 @@ Shell download and Harness runtime download are mutually exclusive. A shell upda
 
 Upstream synchronization and runtime release publication are unattended. Desktop shell publication requires a local signature and an explicit GitHub Release command; installation on a personal machine keeps the existing download and restart confirmations so a background check cannot consume bandwidth or interrupt active work without consent.
 
-A candidate becomes active only after its page loads and remains alive for 30 seconds; failed candidate launches retain the current runtime, two failed attempts reject the candidate, and the menu can swap the current and previous versions for a manual rollback.
+A candidate becomes active only after its page loads and remains alive for 30 seconds; failed candidate launches retain the current runtime, two failed attempts reject the candidate, and the menu can swap the current and previous versions for a manual rollback. A rejected candidate is recorded in the desktop log and reported once at the next startup instead of silently keeping the previous version.
 
 ## Version information
 
