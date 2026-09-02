@@ -33,7 +33,7 @@ import type {
 import { ReasoningEffortId, boundContextSummary, contentHasImage, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm'
 import { SessionLogOffset } from '@deepseek-ai/dsh-session'
-import type { SessionEvent, SessionId, SessionLogOffset as SessionLogOffsetType } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, SessionId , SessionLogOffset as SessionLogOffsetType } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
 import type { SessionObservation, SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
 import type { ToolRestriction } from '@deepseek-ai/dsh-tools'
@@ -134,7 +134,15 @@ export interface SubagentSendMessageOptions {
 
 /** Inputs shared by model steering and the human Queue adapter. */
 type ChildDeliveryOptions =
-  | { readonly delivery: 'steer'; readonly signal: AbortSignal }
+  | {
+    readonly delivery: 'steer'
+    /**
+     * A provided host source is preserved on the user message; omission attributes
+     * an adjacent-Agent message to the parent.
+     */
+    readonly source?: MessageSource
+    readonly signal: AbortSignal
+  }
   | { readonly delivery: 'queue'; readonly source: MessageSource; readonly signal: AbortSignal }
 
 /**
@@ -455,53 +463,94 @@ export class SubagentContinuationManager {
     // parent's future, not to this child.
     const delegatedPolicies = captureDelegatedPolicyOverrides(parent)
 
-    const prepared = await this.host.prepareContinuable(spec.provider, {
-      sessionId: childId,
-      parent,
-      signal: spec.signal,
-    })
-    spec.signal.throwIfAborted()
-    this.assertAdmitting(parent)
-
-    const inheritedEventCount = SessionLogOffset(prepared.seed?.length ?? 0)
-    const seed = seedDescriptorTurn(childId, prepared.seed, descriptor)
-    const messageId = await this.locks.run(childId, async () => {
+    // Hold the parent's own Activation open across the establishment awaits:
+    // an idle continuation-managed parent must not settle while a caller is
+    // still creating its child, or the admitted delivery would find a stale
+    // parent identity. A turn-scoped delegation never needs this (the parent
+    // is `running`), but this service is also callable outside a turn.
+    const releaseHold = this.holdOwnership(parent, childId)
+    try {
+      const prepared = await this.host.prepareContinuable(spec.provider, {
+        sessionId: childId,
+        parent,
+        signal: spec.signal,
+      })
       spec.signal.throwIfAborted()
       this.assertAdmitting(parent)
-      this.assertChildIdAvailable(childId)
-      if (spec.childId !== undefined) {
-        const persisted = await persistence.listSnapshots(spec.signal)
+
+      const inheritedEventCount = SessionLogOffset(prepared.seed?.length ?? 0)
+      const seed = seedDescriptorTurn(childId, prepared.seed, descriptor)
+      const messageId = await this.locks.run(childId, async () => {
         spec.signal.throwIfAborted()
         this.assertAdmitting(parent)
         this.assertChildIdAvailable(childId)
-        if (persisted.some(snapshot => snapshot.header.id === childId)) {
-          throw new SubagentError(`subagent "${childId}" already exists`, 'DUPLICATE_CHILD')
+        if (spec.childId !== undefined) {
+          const persisted = await persistence.stat(childId, { signal: spec.signal })
+          spec.signal.throwIfAborted()
+          this.assertAdmitting(parent)
+          this.assertChildIdAvailable(childId)
+          if (persisted !== undefined) {
+            throw new SubagentError(`subagent "${childId}" already exists`, 'DUPLICATE_CHILD')
+          }
         }
-      }
-      const activation = await this.materialize({
-        childId,
-        provider: spec.provider,
-        parent,
-        create: {
-          seed,
-          meta: childSessionMeta(parent, childDepth, prepared.seed !== undefined),
-          inheritedEventCount,
-          delegatedPolicies,
-        },
-        agentOptions,
-        composition: { persona: request.persona, toolFilter: request.toolFilter },
-        signal: spec.signal,
+        const activation = await this.materialize({
+          childId,
+          provider: spec.provider,
+          parent,
+          create: { seed, meta: childSessionMeta(parent, childDepth, prepared.seed !== undefined), inheritedEventCount, delegatedPolicies },
+          agentOptions,
+          composition: { persona: request.persona, toolFilter: request.toolFilter },
+          signal: spec.signal,
+        })
+        return this.submitMaterialized(
+          activation,
+          isAdjacentAgentSendMessageTool(this.ctx.get('tools')?.get('send_message', activation.handle.agent))
+            ? continuableInitialPrompt(parent.id, request.prompt)
+            : request.prompt,
+          { source: { kind: 'user' }, signal: spec.signal, delivery: 'queue' },
+          parent,
+        )
       })
-      return this.submitMaterialized(
-        activation,
-        isAdjacentAgentSendMessageTool(this.ctx.get('tools')?.get('send_message', activation.handle.agent))
-          ? continuableInitialPrompt(parent.id, request.prompt)
-          : request.prompt,
-        { source: { kind: 'user' }, signal: spec.signal, delivery: 'queue' },
-        parent,
+      return { childId, messageId }
+    } catch (error: unknown) {
+      releaseHold()
+      throw error
+    }
+  }
+
+  /**
+   * Pre-register `childId` in a continuation-managed parent's owned set so the
+   * parent cannot settle while a caller is still establishing or resuming that
+   * child. Returns a releaser for the failure path; it removes only a hold
+   * this call added, and leaves ownership in place once a live Activation for
+   * the child exists (an admitted delivery owns it from then on). A parent
+   * without an Activation needs no hold: only this manager settles parents.
+   * @param parent - the live direct parent the operation is admitted under.
+   * @param childId - the durable child the operation addresses.
+   * @returns the failure-path releaser; a no-op when nothing was added.
+   * @throws {SubagentError} `ACTIVATION_CLOSING` when the parent's own
+   *   disposal transaction is already open.
+   */
+  private holdOwnership(parent: Agent, childId: SessionId): () => void {
+    const parentActivation = this.activations.get(parent.id)
+    if (parentActivation === undefined || parentActivation.handle.agent !== parent) return () => {}
+    if (parentActivation.disposal !== undefined) {
+      throw new SubagentError(
+        `subagent parent "${parent.id}" is being disposed; the child was not established`,
+        'ACTIVATION_CLOSING',
       )
-    })
-    return { childId, messageId }
+    }
+    if (parentActivation.ownedChildren.has(childId)) return () => {}
+    parentActivation.ownedChildren.add(childId)
+    return () => {
+      const live = this.activations.get(childId)
+      /* v8 ignore next 4 -- reaching this arm needs another delivery to establish the child
+       * between this operation's failure and its releaser running, which no test can schedule
+       * deterministically: the ownership edge then belongs to that live Activation, so the
+       * conservative keep leaves it for finishDisposal's releaseOwnership. */
+      if (live !== undefined && live.disposal === undefined) return
+      if (parentActivation.ownedChildren.delete(childId)) this.wake(parentActivation)
+    }
   }
 
   /** Reject one child identity already owned by a live Agent or Session. */
@@ -575,6 +624,25 @@ export class SubagentContinuationManager {
     return this.deliverToChild(parent, childId, content, { source, signal, delivery: 'queue' })
   }
 
+  /**
+   * Steer one host-authored prompt to a direct continuable child.
+   * @param parent - exact live direct parent authorizing delivery.
+   * @param childId - durable direct-child session id.
+   * @param content - host-authored content to deliver.
+   * @param source - durable host-protocol provenance.
+   * @param signal - caller cancellation before inbox acceptance.
+   * @returns the accepted message's inbox id.
+   */
+  async steerPrompt(
+    parent: Agent,
+    childId: SessionId,
+    content: ContentBlock[],
+    source: MessageSource,
+    signal: AbortSignal,
+  ): Promise<MessageId> {
+    return this.deliverToChild(parent, childId, content, { source, signal, delivery: 'steer' })
+  }
+
   /** Route one parent-originated delivery through residency and cold resume. */
   private async deliverToChild(
     parent: Agent,
@@ -583,6 +651,24 @@ export class SubagentContinuationManager {
     options: ChildDeliveryOptions,
   ): Promise<MessageId> {
     this.assertAdmitting(parent)
+    // Same hold as `startContinuable`: an idle continuation-managed parent
+    // must not settle underneath a cold resume it is authorizing.
+    const releaseHold = this.holdOwnership(parent, childId)
+    try {
+      return await this.deliverFollowup(parent, childId, content, options)
+    } catch (error: unknown) {
+      releaseHold()
+      throw error
+    }
+  }
+
+  /** The delivery loop behind {@link deliverToChild}, run under the parent hold. */
+  private async deliverFollowup(
+    parent: Agent,
+    childId: SessionId,
+    content: ContentBlock[],
+    options: ChildDeliveryOptions,
+  ): Promise<MessageId> {
     while (true) {
       const live = await this.locks.run(childId, async () => {
         const activation = this.activations.get(childId)
@@ -995,7 +1081,9 @@ export class SubagentContinuationManager {
     // Fold only the child's own suffix: a fork seed replays the parent's log,
     // which may carry an ANCESTOR's descriptor when the parent is itself a
     // continuable child.
-    const descriptor = foldSubagentDescriptor(source.events.slice(source.inheritedEventCount))
+    const descriptor = foldSubagentDescriptor(
+      source.events.slice(source.inheritedEventCount),
+    )
     if (descriptor === undefined || descriptor.mode !== 'continuable') {
       throw new SubagentError(
         `subagent "${childId}" has no supported continuation state and cannot be resumed; choose a different target`,
@@ -1269,7 +1357,7 @@ export class SubagentContinuationManager {
     // Parent-originated delivery keeps the parent live through ownership, so
     // establish it before the message can enter the child's inbox.
     this.acquireOwnership(parent, activation.childId)
-    const message = options.delivery === 'steer'
+    const message = options.source === undefined
       ? agentMessage(parent, content)
       : createUserMessage({ content, source: options.source })
     const accepted = this.admitWaking(activation, message.id, () => {
