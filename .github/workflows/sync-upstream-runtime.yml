@@ -87,3 +87,6 @@ jobs:
       runtime-revision: 0
       min-desktop-version: 1.0.0
       publish: true
+    # A called workflow sees no caller secrets unless they are forwarded;
+    # the sign job reads the repository-level RUNTIME_SIGNING_PRIVATE_KEY_PEM.
+    secrets: inherit
