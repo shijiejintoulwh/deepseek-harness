@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "1.5.5",
+  "version": "1.5.6-preview.1",
   "private": true,
   "description": "Windows Electron host for an independently updatable DeepSeek Harness runtime",
   "type": "module",
