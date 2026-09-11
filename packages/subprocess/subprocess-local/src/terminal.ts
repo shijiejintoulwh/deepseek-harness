@@ -10,10 +10,31 @@ import type {
   SubprocessTerminalHandle,
   SubprocessTerminalSignal,
 } from '@deepseek-ai/dsh-subprocess'
+import type { BoundProcessOwner } from './managed-owner.ts'
 import type { ProcessIdentity, ProcessInspector, ProcessSnapshot } from './process-inspector.ts'
 
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', finish)
+      resolve()
+    }
+    const timer = setTimeout(finish, ms)
+    signal?.addEventListener('abort', finish, { once: true })
+  })
+}
+
+async function raceWithDelay<T, U>(operation: Promise<T>, ms: number, timeout: U): Promise<T | U> {
+  const controller = new AbortController()
+  try {
+    return await Promise.race([
+      operation,
+      delay(ms, controller.signal).then(() => timeout),
+    ])
+  } finally {
+    controller.abort()
+  }
 }
 
 /** Device Status Report cursor-position query a child console stack emits. */
@@ -43,7 +64,8 @@ function signalName(number: number | undefined): NodeJS.Signals | null {
 }
 
 /**
- * A local terminal whose process-session ownership stays below the PTY backend.
+ * A local terminal whose native managed range or fallback process-session
+ * ownership stays below the PTY backend.
  * The seam's terminate() promise — no write, inspection, or signal in flight
  * after settlement — holds here without operation tracking only because every
  * handle call completes synchronously under the hood (node-pty write, ps-based
@@ -59,6 +81,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   private readonly dataDisposable: IDisposable
   private readonly exitDisposable: IDisposable
   private cleanup: Promise<void> | undefined
+  private managedOwnerCleaned = false
   private exited = false
   private trackedDescendants: ProcessIdentity[] = []
   /** Partial trailing cursor-position query bytes carried across data chunks. */
@@ -77,6 +100,8 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
     private readonly inspector: ProcessInspector,
     private readonly graceMs: number,
     private readonly platform: NodeJS.Platform = process.platform,
+    private readonly managedOwner?: BoundProcessOwner,
+    private readonly resolveManagedOutcome?: (outcome: SubprocessOutcome) => SubprocessOutcome,
   ) {
     this.pid = terminal.pid
     this.rootIdentity = inspector.snapshot().tree(this.pid).find(member => member.pid === this.pid)
@@ -89,11 +114,21 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
       if (this.exited) return
       this.exited = true
       this.output.end()
-      this.outcome.resolve({
+      const outcome = {
         exitCode: exitSignal === undefined || exitSignal === 0 ? exitCode : null,
         signal: signalName(exitSignal),
-      })
+      }
+      try {
+        this.outcome.resolve(this.resolveManagedOutcome?.(outcome) ?? outcome)
+      } catch (error) {
+        this.outcome.reject(error)
+      }
     })
+  }
+
+  /** Whether node-pty has not yet published the top-level exit event. */
+  get running(): boolean {
+    return !this.exited
   }
 
   // node-pty writes synchronously; the seam returns a promise for remote transports.
@@ -176,6 +211,7 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
     this.forceStopDescendants()
     this.forceStopShell()
     this.forceStopDescendants()
+    this.managedOwner?.terminateForHostExit()
   }
 
   private forceStopShell(): void {
@@ -338,6 +374,16 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
   }
 
   private async closeOnce(): Promise<void> {
+    if (this.managedOwner !== undefined) {
+      try {
+        await this.closeManagedRange(this.managedOwner)
+        this.dataDisposable.dispose()
+        this.exitDisposable.dispose()
+      } finally {
+        void this.done.finally(() => { this.cleanupManagedOwner(this.managedOwner as BoundProcessOwner) }).catch(() => {})
+      }
+      return
+    }
     let survivors = await this.stopDescendants()
     if (survivors.length > 0) {
       throw new Error(`terminal cleanup failed; surviving pids: ${survivors.map(member => member.pid).join(', ')}`)
@@ -350,6 +396,39 @@ export class LocalTerminalHandle implements SubprocessTerminalHandle {
     this.settleExitIfGone()
     this.dataDisposable.dispose()
     this.exitDisposable.dispose()
+  }
+
+  private cleanupManagedOwner(owner: BoundProcessOwner): void {
+    if (this.managedOwnerCleaned) return
+    this.managedOwnerCleaned = true
+    owner.cleanup?.()
+  }
+
+  private async closeManagedRange(owner: BoundProcessOwner): Promise<void> {
+    owner.signal('SIGTERM')
+    const observation = owner.waitForExit()
+    const first = await raceWithDelay(observation.then(
+      () => ({ kind: 'stopped' as const }),
+      (error: unknown) => ({ kind: 'failed' as const, error }),
+    ), this.graceMs, { kind: 'timeout' as const })
+    if (first.kind !== 'stopped') {
+      owner.signal('SIGKILL')
+      if (first.kind === 'failed') {
+        // The observation failure is still authoritative, but force cleanup
+        // and a fresh final observation must be attempted before exposing it.
+        try {
+          await owner.waitForExit()
+        } catch (finalError: unknown) {
+          throw new AggregateError([first.error, finalError], 'terminal managed-range cleanup failed')
+        }
+        throw first.error
+      }
+      await observation
+    }
+    if (!this.exited) {
+      await raceWithDelay(this.done.then(() => undefined), this.graceMs, undefined)
+    }
+    if (!this.exited) throw new Error(`terminal cleanup failed; surviving pid: ${this.pid}`)
   }
 
   private settleExitIfGone(): void {
