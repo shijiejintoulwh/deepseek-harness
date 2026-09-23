@@ -51,16 +51,16 @@ function rootCall(match: ConversationMatch): RunningToolCall {
 
 function rootResult(match: ConversationMatch, previous?: RunningToolCall): ToolResultNode | undefined {
   if (match.event.type !== 'tool/result') return undefined
-  const result = match.event.data.message.content[0]
+  const message = match.event.data.message
   return {
     kind: 'tool-result',
     seq: match.event.seq,
     time: match.event.time,
-    callId: String(match.event.data.message.source.callId),
+    callId: String(message.source.callId),
     call: previous === undefined ? null : { name: previous.name, argsRaw: previous.argsRaw },
     callTime: previous?.time ?? null,
-    content: result.content,
-    isError: result.isError === true,
+    content: message.content,
+    isError: message.isError === true,
     ...match.event.data.error === undefined ? {} : { error: match.event.data.error },
     meta: match.event.data.meta,
     subCalls: [],
@@ -73,6 +73,7 @@ interface DispatchData {
   readonly name: string
   readonly arguments: unknown
   readonly isError?: boolean
+  readonly error?: { name: string; code: string; reason?: string }
   readonly content?: ToolResultNode['content']
 }
 
@@ -100,6 +101,7 @@ function childResult(match: ConversationMatch, data: DispatchData, previous?: To
     callTime: previous?.time ?? null,
     content: data.content ?? [],
     isError: data.isError === true,
+    ...data.error === undefined ? {} : { error: data.error },
     subCalls: [],
   }
 }

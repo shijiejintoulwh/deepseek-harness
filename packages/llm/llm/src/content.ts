@@ -1,6 +1,7 @@
 /** Content-block structure helpers. @module @deepseek-ai/dsh-llm/content */
 
-import type { ContentBlock } from './types.ts'
+import type { ContentBlock, ImageBlock, LlmImageRequestBudget } from './types.ts'
+import type { RequestMessage } from './types.ts'
 import type { Message } from './message.ts'
 import type {
   AttachmentStore, FileAttachmentRef, ImageAttachmentRef, ImageMediaType, RequestImageAttachment,
@@ -116,29 +117,25 @@ export function offloadedImageText(
 }
 
 /**
- * True when typed model content contains an image block, walking nested
- * tool-result content. This is the one recursive image walk shared by every
- * image policy (capability gating, text-only serialization, compaction
- * survey), so a consumer cannot silently diverge on nesting depth.
+ * True when typed model content contains an image block. This is the one image
+ * walk shared by every image policy (capability gating, text-only
+ * serialization, compaction survey), so a consumer cannot silently diverge.
  * @param content - typed model content blocks.
- * @returns whether any nested block is an image.
+ * @returns whether any block is an image.
  */
 export function contentHasImage(content: readonly ContentBlock[]): boolean {
-  return content.some(block => block.type === 'image'
-    || (block.type === 'tool-result' && contentHasImage(block.content)))
+  return content.some(block => block.type === 'image')
 }
 
 /**
- * True when typed model content contains a file block, walking nested
- * tool-result content on the same recursion every file policy shares.
+ * True when typed model content contains a file block.
  * Reads current content on every call without retaining scan results.
  * @param content - typed model content blocks.
- * @returns whether any nested block is a file.
+ * @returns whether any block is a file.
  */
 export function contentHasFile(content: readonly ContentBlock[]): boolean {
   for (const block of content) {
-    if (block.type === 'file'
-      || (block.type === 'tool-result' && contentHasFile(block.content))) return true
+    if (block.type === 'file') return true
   }
   return false
 }
@@ -160,7 +157,7 @@ export function fileHandleText(ref: FileAttachmentRef, readonlyPath: string | un
   return `[${identity}: verbatim read-only copy saved at ${quoted(readonlyPath)}. Read that path with your file tools when its contents are needed; copy it to a writable location before modifying it. When delegating file work, include this saved path in the delegation prompt; only subagents sharing this execution environment can read it.]`
 }
 
-/** Replace every file occurrence, including nested tool results, with handle text. */
+/** Replace every file occurrence with handle text. */
 function replaceFilesWithHandles(
   blocks: readonly ContentBlock[],
   resolvePath: (ref: FileAttachmentRef) => string | undefined,
@@ -172,21 +169,13 @@ function replaceFilesWithHandles(
       next.push({ type: 'text', text: fileHandleText(block.attachment, resolvePath(block.attachment)) })
       continue
     }
-    if (block.type === 'tool-result') {
-      const content = replaceFilesWithHandles(block.content, resolvePath)
-      if (content !== block.content) {
-        next ??= blocks.slice(0, index)
-        next.push({ ...block, content })
-        continue
-      }
-    }
     next?.push(block)
   }
   return next ?? blocks as ContentBlock[]
 }
 
 /**
- * Project durable file history into deterministic handle text for every model
+ * Project request file content into deterministic handle text for every model
  * route. Unlike images, no provider receives file blocks natively, so this
  * projection is unconditional in request assembly.
  * @param messages - complete request history.
@@ -196,7 +185,21 @@ function replaceFilesWithHandles(
 export function projectFilesToText(
   messages: readonly Message[],
   resolvePath: (ref: FileAttachmentRef) => string | undefined,
-): readonly Message[] {
+): readonly Message[]
+/**
+ * Project file content in mixed durable and request-only inputs.
+ * @param messages - complete request inputs.
+ * @param resolvePath - resolve a reference's execution-world read path.
+ * @returns original inputs without files, otherwise copies with handle text.
+ */
+export function projectFilesToText(
+  messages: readonly RequestMessage[],
+  resolvePath: (ref: FileAttachmentRef) => string | undefined,
+): readonly RequestMessage[]
+export function projectFilesToText(
+  messages: readonly RequestMessage[],
+  resolvePath: (ref: FileAttachmentRef) => string | undefined,
+): readonly RequestMessage[] {
   if (!messages.some(message => contentHasFile(message.content))) return messages
   return messages.map((message) => {
     const content = replaceFilesWithHandles(message.content, resolvePath)
@@ -209,85 +212,28 @@ function base64Length(bytes: number): number {
   return Math.ceil(bytes / 3) * 4
 }
 
-/** Byte accounting and quantized removal policy for one request representation. */
-export interface RequestImageOffloadPolicy {
-  /** Image count accepted by the route; omission leaves count unbounded. */
-  maxImages?: number
-  /** Accumulated image bytes accepted by the route; omission leaves bytes unbounded. */
-  maxBytes?: number
-  /** Number of excess images removed as one deterministic step. */
-  countQuantum?: number
-  /** Number of excess bytes removed as one deterministic step. */
-  byteQuantum?: number
-  /** Whether byte accounting uses raw file bytes or inline base64 length. */
-  representation: 'raw' | 'base64'
-  /** Resolve the encoded request-version length; omission uses normalized attachment bytes. */
-  byteLength?: (ref: ImageAttachmentRef) => number
-  /** Build the model-visible replacement for each omitted attachment. */
-  placeholder: (ref: ImageAttachmentRef) => string
-}
-
-/** Collect represented image lengths in request and nested-block order. */
-function collectImageLengths(
-  blocks: readonly ContentBlock[],
-  lengths: number[],
-  policy: RequestImageOffloadPolicy,
-): void {
-  for (const block of blocks) {
-    if (block.type === 'image') {
-      const bytes = policy.byteLength === undefined
-        ? block.attachment.bytes
-        : policy.byteLength(block.attachment)
-      lengths.push(policy.representation === 'base64' ? base64Length(bytes) : bytes)
-    } else if (block.type === 'tool-result') {
-      collectImageLengths(block.content, lengths, policy)
-    }
+/**
+ * Visit every image occurrence of typed content in message order.
+ * @param content - typed model content blocks.
+ * @param visit - called once per occurrence.
+ */
+function visitImageBlocks(content: readonly ContentBlock[], visit: (block: ImageBlock) => void): void {
+  for (const block of content) {
+    if (block.type === 'image') visit(block)
   }
 }
 
-/** Replace the first `remaining.count` image occurrences without mutating durable messages. */
-function replaceOldestImages(
+/** Replace every offloaded occurrence with its placeholder. */
+function replaceOffloadedImages(
   blocks: readonly ContentBlock[],
-  remaining: { count: number },
   placeholder: (ref: ImageAttachmentRef) => string,
 ): ContentBlock[] {
   let next: ContentBlock[] | undefined
   for (const [index, block] of blocks.entries()) {
-    if (block.type === 'image' && remaining.count > 0) {
-      remaining.count -= 1
+    if (block.type === 'image' && block.offloaded === true) {
       next ??= blocks.slice(0, index)
       next.push({ type: 'text', text: placeholder(block.attachment) })
       continue
-    }
-    if (block.type === 'tool-result') {
-      const content = replaceOldestImages(block.content, remaining, placeholder)
-      if (content !== block.content) {
-        next ??= blocks.slice(0, index)
-        next.push({ ...block, content })
-        continue
-      }
-    }
-    next?.push(block)
-  }
-  return next ?? blocks as ContentBlock[]
-}
-
-/** Replace every image occurrence, including nested tool results, for a text-only model. */
-function replaceImagesForTextModel(blocks: readonly ContentBlock[]): ContentBlock[] {
-  let next: ContentBlock[] | undefined
-  for (const [index, block] of blocks.entries()) {
-    if (block.type === 'image') {
-      next ??= blocks.slice(0, index)
-      next.push({ type: 'text', text: textOnlyImageText(block.attachment) })
-      continue
-    }
-    if (block.type === 'tool-result') {
-      const content = replaceImagesForTextModel(block.content)
-      if (content !== block.content) {
-        next ??= blocks.slice(0, index)
-        next.push({ ...block, content })
-        continue
-      }
     }
     next?.push(block)
   }
@@ -295,37 +241,56 @@ function replaceImagesForTextModel(blocks: readonly ContentBlock[]): ContentBloc
 }
 
 /**
- * Project durable image history into deterministic text for an exact text-only model.
- * @param messages - complete request history.
- * @returns the original list without images, otherwise shallow message copies with stable placeholders.
+ * Project the surface's offloaded occurrences into deterministic text for one
+ * request. The offloaded set is a durable surface fact, so every route sends
+ * the same set; only the placeholder text is route-owned.
+ * @param messages - derived request history.
+ * @param placeholder - build the model-visible replacement for one offloaded attachment.
+ * @returns the original list when nothing is offloaded, otherwise shallow message copies with placeholders.
  */
-export function projectImagesForTextModel(messages: readonly Message[]): readonly Message[] {
-  if (!messages.some(message => contentHasImage(message.content))) return messages
+export function projectOffloadedImages(
+  messages: readonly Message[],
+  placeholder: (ref: ImageAttachmentRef) => string,
+): readonly Message[]
+/**
+ * Project offloaded images in mixed durable and request-only inputs.
+ * @param messages - complete request inputs.
+ * @param placeholder - replacement text for an offloaded attachment.
+ * @returns original messages or shallow copies with placeholders.
+ */
+export function projectOffloadedImages(
+  messages: readonly RequestMessage[],
+  placeholder: (ref: ImageAttachmentRef) => string,
+): readonly RequestMessage[]
+export function projectOffloadedImages(
+  messages: readonly RequestMessage[],
+  placeholder: (ref: ImageAttachmentRef) => string,
+): readonly RequestMessage[] {
   return messages.map((message) => {
-    const content = replaceImagesForTextModel(message.content)
+    const content = replaceOffloadedImages(message.content, placeholder)
     return content === message.content ? message : { ...message, content }
   })
 }
 
 /**
- * Number of oldest image occurrences one request projection removes, in whole
- * count and byte quanta, once a route budget is exceeded. The result depends
- * only on the represented lengths, so provider request pricing reproduces the
- * exact serialization decision without building the projected messages.
- * @param lengths - represented byte length of every occurrence, in request order.
- * @param policy - count/byte budgets and removal quanta; unbounded when absent.
- * @returns how many leading occurrences the projection replaces with placeholders.
+ * Number of oldest retained image occurrences one route budget removes, in
+ * whole count and byte quanta, once the budget is exceeded. The result depends
+ * only on the represented lengths, so every route names the count the same
+ * way.
+ * @param lengths - represented byte length of every retained occurrence, oldest first.
+ * @param budget - count/byte budgets and removal quanta; unbounded when absent.
+ * @returns how many leading occurrences to offload.
  */
-export function offloadedImagePrefixCount(
+function offloadedImagePrefixCount(
   lengths: readonly number[],
-  policy: Pick<RequestImageOffloadPolicy, 'maxImages' | 'maxBytes' | 'countQuantum' | 'byteQuantum'>,
+  budget: Pick<LlmImageRequestBudget, 'maxImages' | 'maxBytes' | 'countQuantum' | 'byteQuantum'>,
 ): number {
   const total = lengths.reduce((sum, bytes) => sum + bytes, 0)
-  const excessCount = policy.maxImages === undefined ? 0 : Math.max(0, lengths.length - policy.maxImages)
-  const excessBytes = policy.maxBytes === undefined ? 0 : Math.max(0, total - policy.maxBytes)
+  const excessCount = budget.maxImages === undefined ? 0 : Math.max(0, lengths.length - budget.maxImages)
+  const excessBytes = budget.maxBytes === undefined ? 0 : Math.max(0, total - budget.maxBytes)
   if (excessCount === 0 && excessBytes === 0) return 0
-  const countQuantum = policy.countQuantum ?? 1
-  const byteQuantum = policy.byteQuantum ?? 1
+  const countQuantum = budget.countQuantum ?? 1
+  const byteQuantum = budget.byteQuantum ?? 1
   const removeCount = excessCount === 0 ? 0 : Math.ceil(excessCount / countQuantum) * countQuantum
   const removeBytes = excessBytes === 0 ? 0 : Math.ceil(excessBytes / byteQuantum) * byteQuantum
   let count = 0
@@ -341,27 +306,61 @@ export function offloadedImagePrefixCount(
 }
 
 /**
- * Return a deterministic transient projection whose oldest images are replaced
- * in whole count and byte quanta after a route budget is exceeded. The target
- * depends only on complete durable history: at 129 one-megabyte images under
- * a 128 MiB bound with a 64 MiB quantum, the oldest 65 images are removed so
- * 64 MiB remain; that removed prefix stays fixed until total history exceeds
- * 192 MiB.
- * @param messages - complete request history, oldest first.
- * @param policy - route representation, budgets, and removal quanta.
- * @returns original messages below both bounds, otherwise shallow copies with deterministic placeholders.
+ * Number of oldest retained occurrences a route must still offload before a
+ * derived request fits its budget at the exact byte length the route sends;
+ * zero when the request fits. A route fails with `IMAGE_OFFLOAD_REQUIRED`
+ * carrying this count instead of offloading on its own.
+ * @param messages - derived request history carrying the surface's `offloaded` marks.
+ * @param budget - route representation, budgets, and removal quanta.
+ * @param versionBytes - exact request-version byte length of one retained occurrence.
+ * @returns how many more leading retained occurrences to offload.
  */
-export function offloadRequestImagesWithPolicy(
-  messages: readonly Message[],
-  policy: RequestImageOffloadPolicy,
-): readonly Message[] {
+export function requiredImageOffload(
+  messages: readonly RequestMessage[],
+  budget: Pick<LlmImageRequestBudget, 'representation' | 'maxBytes' | 'maxImages' | 'byteQuantum' | 'countQuantum'>,
+  versionBytes: (block: ImageBlock) => number,
+): number {
   const lengths: number[] = []
-  for (const message of messages) collectImageLengths(message.content, lengths, policy)
-  const count = offloadedImagePrefixCount(lengths, policy)
-  if (count === 0) return messages
-  const remaining = { count }
+  for (const message of messages) {
+    visitImageBlocks(message.content, (block) => {
+      if (block.offloaded === true) return
+      const bytes = versionBytes(block)
+      lengths.push(budget.representation === 'base64' ? base64Length(bytes) : bytes)
+    })
+  }
+  return offloadedImagePrefixCount(lengths, budget)
+}
+
+/** Replace every image occurrence for a text-only model. */
+function replaceImagesForTextModel(blocks: readonly ContentBlock[]): ContentBlock[] {
+  let next: ContentBlock[] | undefined
+  for (const [index, block] of blocks.entries()) {
+    if (block.type === 'image') {
+      next ??= blocks.slice(0, index)
+      next.push({ type: 'text', text: textOnlyImageText(block.attachment) })
+      continue
+    }
+    next?.push(block)
+  }
+  return next ?? blocks as ContentBlock[]
+}
+
+/**
+ * Project request image content into deterministic text for an exact text-only model.
+ * @param messages - complete request history.
+ * @returns the original list without images, otherwise shallow message copies with stable placeholders.
+ */
+export function projectImagesForTextModel(messages: readonly Message[]): readonly Message[]
+/**
+ * Project image content in mixed durable and request-only inputs for a text-only model.
+ * @param messages - complete request inputs.
+ * @returns original inputs without images, otherwise copies with stable placeholders.
+ */
+export function projectImagesForTextModel(messages: readonly RequestMessage[]): readonly RequestMessage[]
+export function projectImagesForTextModel(messages: readonly RequestMessage[]): readonly RequestMessage[] {
+  if (!messages.some(message => contentHasImage(message.content))) return messages
   return messages.map((message) => {
-    const content = replaceOldestImages(message.content, remaining, policy.placeholder)
+    const content = replaceImagesForTextModel(message.content)
     return content === message.content ? message : { ...message, content }
   })
 }

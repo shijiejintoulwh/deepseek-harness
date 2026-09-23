@@ -30,7 +30,7 @@ const EXPANDED_EXPECTED = fileURLToPath(
 const PROVIDER = 'github-webhook-review-test'
 const MODEL = 'reply'
 const SECRET = 'github-webhook-review-secret'
-const TITLE = 'Review deepseek-harness/deepseek-harness#314'
+const TITLE = 'Review deepseek-ai/deepseek-harness#314'
 const REPLY = 'Review complete: no actionable findings.'
 
 /** Deterministic model response for the webhook-created Session. */
@@ -129,10 +129,10 @@ describe.skipIf(MODE === 'record')('web e2e: GitHub ready-for-review', () => {
     const payload = {
       action: 'ready_for_review',
       number: 314,
-      repository: { full_name: 'deepseek-harness/deepseek-harness' },
+      repository: { full_name: 'deepseek-ai/deepseek-harness' },
       pull_request: {
         title: 'Fix session replay',
-        html_url: 'https://github.com/deepseek-harness/deepseek-harness/pull/314',
+        html_url: 'https://github.com/deepseek-ai/deepseek-harness/pull/314',
         draft: false,
         user: { login: 'octocat' },
         base: { ref: 'master', sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
@@ -179,7 +179,7 @@ describe.skipIf(MODE === 'record')('web e2e: GitHub ready-for-review', () => {
     expect(agent).toBeDefined()
     const workspace = await scaffold.ctx.workspaceRegistry.resolveByPath(scaffold.workspaceCwd)
     expect(workspace?.sessionIds).toContain(agent?.id)
-    const webhookMessage = adapter.requests[0]?.messages.find(message => message.source.kind === 'webhook')
+    const webhookMessage = adapter.requests[0]?.messages.find(message => message.role === 'user' && message.source?.kind === 'webhook')
     expect(webhookMessage?.content).toHaveLength(1)
     const [content] = webhookMessage?.content ?? []
     expect(content?.type).toBe('text')

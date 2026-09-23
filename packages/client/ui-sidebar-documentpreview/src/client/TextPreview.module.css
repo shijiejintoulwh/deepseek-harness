@@ -28,38 +28,8 @@
   border-bottom: 0.5px solid var(--dsw-alias-border-l3);
 }
 
-/* The path is never ellipsized. Its text sits at the left while it fits: the
-   auto margin takes the free space. Once it is wider than the box, the auto
-   margin is zero and `flex-end` holds the name at the right edge, so the
-   directories run off the left and the box clips them there, faded by the
-   mask while `data-textpreview-path-clipped` is set. The margin plus the row's
-   gap put the text 16px clear of the first control. */
 .path {
-  display: flex;
-  flex: 1 1 auto;
-  justify-content: flex-end;
-  min-width: 0;
   margin-right: 12px;
-  overflow: hidden;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.path[data-textpreview-path-clipped] {
-  mask-image: linear-gradient(to right, transparent, black 28px);
-}
-
-.pathText {
-  flex: none;
-  margin-right: auto;
-}
-
-.pathDirectory {
-  color: var(--dsw-alias-label-tertiary);
-}
-
-.pathName {
-  color: var(--dsw-alias-label-primary);
 }
 
 /* Announced, not applied: the reader keeps the text they are looking at. */
@@ -105,6 +75,10 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.body:has([data-pdf-preview]) {
+  background: var(--dsw-alias-bg-document-preview);
 }
 
 .wrap {
@@ -217,12 +191,25 @@
   white-space: normal;
 }
 
+/* The whole pane before any content exists, so the line centres like the
+   empty states below instead of sitting in the corner. */
 .status {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  height: 100%;
   padding: 12px 10px;
+}
+
+/* The first read, centred in the still-empty body; loaded content replaces it. */
+.bodyLoading {
+  justify-content: center;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
 }
 
 .action {
@@ -294,11 +281,18 @@
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-interactive-bg-hover);
 }
+
+.tool[data-textpreview-tool='auto-refresh'][aria-pressed='true'] {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
 .viewerTool {
+  flex: none;
   width: auto;
   max-width: 160px;
   padding: 0 6px;
   overflow: hidden;
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   white-space: nowrap;
   text-overflow: ellipsis;

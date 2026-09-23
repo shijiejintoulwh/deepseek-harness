@@ -51,7 +51,7 @@ afterAll(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
-/** Drive the shipping adapter's chat-completions request at an unresolvable endpoint. */
+/** Drive the shipping adapter's Messages request at an unresolvable endpoint. */
 async function streamOnce(): Promise<void> {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
@@ -63,7 +63,7 @@ async function streamOnce(): Promise<void> {
 }
 
 describe('llm-deepseek egress', () => {
-  it('sends the chat-completions request through the proxy', async () => {
+  it('sends the Messages request through the proxy', async () => {
     const observed = await observe(streamOnce)
     expect(observed.join('|')).toContain('deepseek-probe.invalid')
   })

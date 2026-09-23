@@ -1,6 +1,6 @@
 /**
  * Settings shell root: the sidebar-foot trigger row plus the centered modal
- * panel (figma 501:29947, 1080x700) with the section nav rail. The shell is
+ * panel (figma 2552:26025, 760x500) with the section nav rail. The shell is
  * a pure composition face — slot-owned text (trigger label, panel title,
  * close label, sections) arrives from registrants through slots; accessible
  * names resolve from localized content (trigger: shell locale; dialog:
@@ -14,21 +14,27 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import clsx from 'clsx'
 import {
   ConnectionIndicator,
-  IconAgentPresetOutline16, IconCloseOutline16, IconDataOutline16,
-  IconPersonalizationOutline16, IconSettingsOutline16,
+  IconAgentPresetOutlineMedium, IconArchiveOutlineMedium, IconCloseOutlineRegular, IconDataOutlineMedium,
+  IconPersonalizationOutlineMedium, IconSettingsOutlineMedium, IconUserOutlineMedium,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ConnectionIndicatorState } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SettingsRootComponentProps, SettingsSectionRow } from './shell-contract.ts'
 import css from './SettingsRoot.module.css'
+import { DesktopUpdateIndicator } from './DesktopUpdateIndicator.tsx'
 
 const RECOVERY_CONFIRMATION_MS = 2_000
 
+/** Minimum visible time for the connecting pill; shorter attempts read as flicker. */
+const CONNECTING_MIN_VISIBLE_MS = 800
+
 /** Nav glyph by section id; unknown ids fall back to the settings gear. */
 function navIcon(id: string) {
-  if (id === 'models') return <IconDataOutline16 className={css.navIcon} size={16} />
-  if (id === 'agent-presets') return <IconAgentPresetOutline16 className={css.navIcon} size={16} />
-  if (id === 'plugins') return <IconPersonalizationOutline16 className={css.navIcon} size={16} />
-  return <IconSettingsOutline16 className={css.navIcon} size={16} />
+  if (id === 'account') return <IconUserOutlineMedium className={css.navIcon} size={16} />
+  if (id === 'models') return <IconDataOutlineMedium className={css.navIcon} size={16} />
+  if (id === 'agent-presets') return <IconAgentPresetOutlineMedium className={css.navIcon} size={16} />
+  if (id === 'plugins') return <IconPersonalizationOutlineMedium className={css.navIcon} size={16} />
+  if (id === 'archived-sessions') return <IconArchiveOutlineMedium className={css.navIcon} size={16} />
+  return <IconSettingsOutlineMedium className={css.navIcon} size={16} />
 }
 
 type PanelProps = {
@@ -87,7 +93,7 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
           <div className={css.header}>
             <div className={css.actions}>{renderSlot('settings.action', {})}</div>
             <button ref={closeButton} type="button" className={css.close} onClick={onClose}>
-              <IconCloseOutline16 size={14} />
+              <IconCloseOutlineRegular size={14} />
               <span className={css.hiddenLabel}>{renderSlot('settings.close', {})}</span>
             </button>
           </div>
@@ -108,11 +114,16 @@ function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }: PanelP
 export function SettingsRoot(props: SettingsRootComponentProps) {
   const {
     wide, reconnect, useConnectionState, useSections, useOnboardingSteps, useSessions, renderSlot, t,
+    useDesktopUpdate, openDesktopUpdate,
   } = props
   const [open, setOpen] = useState(false)
   const [activeId, setActiveId] = useState<string | undefined>(undefined)
+  const [requestedOnboarding, setRequestedOnboarding] = useState<string | undefined>()
   const [completedOnboarding, setCompletedOnboarding] = useState<ReadonlySet<string>>(() => new Set())
   const [showRecovery, setShowRecovery] = useState(false)
+  const [holdConnecting, setHoldConnecting] = useState(false)
+  const connectingShownAt = useRef<number | undefined>(undefined)
+  const triggerRow = useRef<HTMLDivElement | null>(null)
   const triggerButton = useRef<HTMLButtonElement | null>(null)
   const wasOpen = useRef(open)
   const close = useCallback(() => {
@@ -121,7 +132,7 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
   }, [])
   // Restore after the close commit, when the dialog can no longer own focus.
   useEffect(() => {
-    if (wasOpen.current && !open) triggerButton.current?.focus()
+    if (wasOpen.current && !open) triggerRow.current?.querySelector('button')?.focus()
     wasOpen.current = open
   }, [open])
   const openSection = useCallback((id: string) => {
@@ -133,15 +144,20 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
   // freshly localized text on locale change, and the trigger/header/close
   // seats re-render through their own outlets' subscriptions.
   const rows = useSections(s => s)
+  const desktopUpdate = useDesktopUpdate(state => state)
   const connectionState = useConnectionState(state => state)
   const previousConnectionState = useRef(connectionState)
   const onboardingSteps = useOnboardingSteps(s => s)
-  const onboardingActive = useSessions(state =>
-    state.phase === 'ready'
-    && (state.current === undefined || state.byId[state.current]?.blank === true))
-  const onboardingStep = onboardingActive
-    ? onboardingSteps.find(step => !completedOnboarding.has(step.id))
-    : undefined
+  const onboardingActive = useSessions((state) => {
+    const main = Object.values(state.byId)
+      .find(session => (session.retainedBy.mainView ?? 0) > 0)
+    return state.phase === 'ready' && (main === undefined || main.blank)
+  })
+  const onboardingStep = requestedOnboarding !== undefined
+    ? onboardingSteps.find(step => step.id === requestedOnboarding)
+    : onboardingActive
+      ? onboardingSteps.find(step => !completedOnboarding.has(step.id))
+      : undefined
 
   useEffect(() => {
     if (onboardingActive) return
@@ -157,11 +173,36 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
     }
     if (previous !== 'disconnected' && previous !== 'connecting') return
     setShowRecovery(true)
+  }, [connectionState])
+
+  // The confirmation window starts when the recovered pill becomes visible,
+  // which the connecting minimum-visible hold can delay past the transition.
+  useLayoutEffect(() => {
+    if (!showRecovery || holdConnecting) return
     const timeout = window.setTimeout(() => { setShowRecovery(false) }, RECOVERY_CONFIRMATION_MS)
     return () => { window.clearTimeout(timeout) }
+  }, [showRecovery, holdConnecting])
+
+  useLayoutEffect(() => {
+    if (connectionState === 'connecting') {
+      connectingShownAt.current = Date.now()
+      return
+    }
+    const shownAt = connectingShownAt.current
+    if (shownAt === undefined) return
+    connectingShownAt.current = undefined
+    const remaining = CONNECTING_MIN_VISIBLE_MS - (Date.now() - shownAt)
+    if (remaining <= 0) return
+    setHoldConnecting(true)
+    const timeout = window.setTimeout(() => { setHoldConnecting(false) }, remaining)
+    return () => {
+      window.clearTimeout(timeout)
+      setHoldConnecting(false)
+    }
   }, [connectionState])
 
   const completeOnboardingStep = useCallback((id: string) => {
+    setRequestedOnboarding(undefined)
     setCompletedOnboarding((previous) => {
       if (previous.has(id)) return previous
       return new Set([...previous, id])
@@ -169,18 +210,18 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
   }, [])
 
   let connectionIndicator: ConnectionIndicatorState | undefined
-  if (connectionState === 'disconnected') {
-    connectionIndicator = 'disconnected'
-  } else if (connectionState === 'connecting') {
+  if (connectionState === 'connecting' || holdConnecting) {
     connectionIndicator = 'connecting'
+  } else if (connectionState === 'disconnected') {
+    connectionIndicator = 'disconnected'
   } else if (showRecovery) {
     connectionIndicator = 'recovered'
   }
 
   return (
     <>
-      <div className={clsx(css.triggerRow, !wide && css.railRow)}>
-        <button
+      <div ref={triggerRow} className={clsx(css.triggerRow, !wide && css.railRow)}>
+        {renderSlot('settings.launcher', { wide, openSettings: () => { setOpen(true) }, openOnboarding: (id) => { setOpen(false); setRequestedOnboarding(id) } }, { fallback: <button
           ref={triggerButton}
           type="button"
           className={clsx(css.trigger, !wide && css.rail)}
@@ -190,17 +231,18 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
           onClick={() => { setOpen(true) }}
         >
           {renderSlot('settings.trigger', { wide })}
-        </button>
+        </button> })}
         <ConnectionIndicator
-          state={wide ? connectionIndicator : undefined}
+          state={wide && desktopUpdate.presentation?.phase !== 'installing' ? connectionIndicator : undefined}
           disconnectedLabel={t('connection.error')}
-          reconnectLabel={t('connection.retry')}
           connectingLabel={t('connection.connecting')}
           recoveredLabel={t('connection.connected')}
           reconnectActionLabel={t('connection.reconnect')}
           restartActionLabel={t('connection.restart')}
           onReconnect={reconnect}
         />
+        <DesktopUpdateIndicator wide={wide} hidden={connectionIndicator !== undefined && desktopUpdate.presentation?.phase !== 'installing'}
+          t={t} view={desktopUpdate} onOpen={openDesktopUpdate} />
       </div>
       {open && (
         <SettingsPanel
@@ -216,6 +258,7 @@ export function SettingsRoot(props: SettingsRootComponentProps) {
           renders null, so nothing paints or blocks while it decides. */}
       {onboardingStep !== undefined && renderSlot('settings.onboarding', {
         stepId: onboardingStep.id,
+        explicit: requestedOnboarding !== undefined,
         complete: () => { completeOnboardingStep(onboardingStep.id) },
         openSection,
       }, { only: onboardingStep.id })}

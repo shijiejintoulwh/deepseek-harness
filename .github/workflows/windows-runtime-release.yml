@@ -183,7 +183,7 @@ jobs:
           if (!Number.isInteger(manifest.size) || manifest.size < 1 || !/^[0-9a-f]{64}$/.test(manifest.sha256)) throw new Error('runtime archive metadata is invalid');
           if (manifest.commitSha !== process.env.EXPECTED_SOURCE_SHA) throw new Error('runtime manifest source commit is invalid');
           if (manifest.minDesktopVersion !== process.env.EXPECTED_MIN_DESKTOP_VERSION || manifest.desktopProtocolVersion !== 1) throw new Error('runtime compatibility is invalid');
-          if (!/^v24\./.test(manifest.nodeVersion) || typeof manifest.publishedAt !== 'string' || Number.isNaN(Date.parse(manifest.publishedAt))) throw new Error('runtime provenance is invalid');
+          if (!/^v24\./.test(manifest.nodeVersion) || typeof manifest.publishedAt !== 'string' || Number.isNaN(Date.parse(manifest.publishedAt))) throw new Error('runtime Node version or publication timestamp is invalid');
           const expectedTag = 'runtime-v' + manifest.harnessVersion + '-r' + manifest.runtimeRevision;
           if (expectedTag !== process.env.EXPECTED_RUNTIME_TAG) throw new Error('runtime release tag is invalid');
           const expectedAsset = 'deepseek-harness-runtime-win32-x64-' + manifest.harnessVersion + '-r' + manifest.runtimeRevision + '.zip';
