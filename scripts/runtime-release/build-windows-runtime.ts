@@ -48,10 +48,10 @@ function responseCookie(response: Response): string | undefined {
   return undefined
 }
 
-/** Exchange the printed launch token, then verify the authenticated Web shell. */
+/** Require the directory-relative token redirect before verifying the authenticated Web shell. */
 export async function probeWebShell(url: URL, request: FetchRequest = fetch): Promise<boolean> {
   const launch = await request(url, { redirect: 'manual' })
-  if (launch.status !== 303 || launch.headers.get('location') !== '/') {
+  if (launch.status !== 303 || launch.headers.get('location') !== './') {
     await launch.arrayBuffer()
     return false
   }

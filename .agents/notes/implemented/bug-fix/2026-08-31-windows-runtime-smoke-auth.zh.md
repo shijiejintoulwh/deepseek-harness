@@ -10,7 +10,7 @@ Windows runtime smoke 直接请求带认证信息的 Web URL，并要求立即�
 
 ## 决策
 
-Smoke probe 使用手动重定向处理请求打印出的 URL，提取返回的 session cookie，然后携带该 cookie 请求不带查询参数的 loopback 根路径，再检查注入的 `__DSH_BOOT__` 标记。子进程增加 `--no-open`，因此 CI smoke 不会启动浏览器。probe 仍受现有重试期限限制，并且不会把提取出的 cookie 追加到有界的子进程输出诊断中。
+Smoke probe 使用手动重定向处理请求打印出的 URL，要求 Web connection 返回相对目录的 `Location: ./`，提取 session cookie，然后携带该 cookie 请求不带查询参数的 loopback 根路径，再检查注入的 `__DSH_BOOT__` 标记。相对重定向保留 Web 的挂载路径。子进程增加 `--no-open`，因此 CI smoke 不会启动浏览器。probe 仍受现有重试期限限制，并且不会把提取出的 cookie 追加到有界的子进程输出诊断中。
 
 ## 考虑过的替代方案
 
@@ -20,4 +20,4 @@ Smoke probe 使用手动重定向处理请求打印出的 URL，提取返回的 
 
 ## 后果
 
-Smoke test 现在覆盖首次浏览器请求的完整流程，可以发布实际可访问 Web shell 的 runtime。该检查依赖 Web 启动协议保持为 `303` 令牌交换再请求 clean root；如果协议改变，必须同时更新该 probe 与其聚焦测试。
+Smoke test 现在覆盖首次浏览器请求的完整流程，可以发布实际可访问 Web shell 的 runtime。该检查依赖 Web 启动协议保持为带 `Location: ./` 的 `303` 令牌交换，再请求 clean root；如果协议改变，必须同时更新该 probe 与其聚焦测试。

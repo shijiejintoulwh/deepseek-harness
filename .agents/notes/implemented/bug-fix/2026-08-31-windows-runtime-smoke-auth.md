@@ -10,7 +10,7 @@ The Windows runtime smoke test opened the authenticated Web URL and required an 
 
 ## Decision
 
-The smoke probe sends the printed URL with manual redirect handling, extracts the returned session cookie, and requests the clean loopback root with that cookie before checking for the injected `__DSH_BOOT__` marker. The child receives `--no-open` so a CI smoke test does not launch a browser. The probe remains bounded by the existing retry deadline and does not add the extracted cookie to the bounded child-output diagnostic.
+The smoke probe sends the printed URL with manual redirect handling, requires the Web connection's directory-relative `Location: ./`, extracts the returned session cookie, and requests the clean loopback root with that cookie before checking for the injected `__DSH_BOOT__` marker. The relative redirect preserves a mounted Web path. The child receives `--no-open` so a CI smoke test does not launch a browser. The probe remains bounded by the existing retry deadline and does not add the extracted cookie to the bounded child-output diagnostic.
 
 ## Alternatives considered
 
@@ -20,4 +20,4 @@ The smoke probe sends the printed URL with manual redirect handling, extracts th
 
 ## Consequences
 
-The smoke test now covers the complete first-browser-request flow and can publish runtimes whose Web shell is actually reachable. The check depends on the Web launch contract remaining a `303` token exchange followed by a clean-root request; a change to that protocol must update this probe and its focused tests together.
+The smoke test now covers the complete first-browser-request flow and can publish runtimes whose Web shell is actually reachable. The check depends on the Web launch contract remaining a `303` token exchange with `Location: ./` followed by a clean-root request; a change to that protocol must update this probe and its focused tests together.
