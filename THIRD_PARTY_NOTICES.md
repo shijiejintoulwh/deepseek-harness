@@ -56,7 +56,6 @@ External packages installed for runtime use or distributed inside the prebuilt b
 | [`@opentelemetry/api`](https://github.com/open-telemetry/opentelemetry-js) | Apache-2.0 |
 | [`@opentelemetry/api-logs`](https://github.com/open-telemetry/opentelemetry-js) | Apache-2.0 |
 | [`@opentelemetry/core`](https://github.com/open-telemetry/opentelemetry-js) | Apache-2.0 |
-| [`@opentelemetry/exporter-logs-otlp-http`](https://github.com/open-telemetry/opentelemetry-js) | Apache-2.0 |
 | [`@opentelemetry/otlp-exporter-base`](https://github.com/open-telemetry/opentelemetry-js) | Apache-2.0 |
 | [`@opentelemetry/otlp-transformer`](https://github.com/open-telemetry/opentelemetry-js) | Apache-2.0 |
 | [`@opentelemetry/resources`](https://github.com/open-telemetry/opentelemetry-js) | Apache-2.0 |

@@ -25,9 +25,10 @@ Send selected product usage events to an OTLP/HTTP collector. Events carry a nam
 <a id="use-this-package"></a>
 ## Use this package
 
-Mount the plugin in a Cordis composition with the application identity; override the collector endpoint when needed. The shipped profiles do not mount it. Set `DSH_APP_VERSION` to the running application release version in the launcher environment; the schema rejects an absent version.
+Mount the plugin in a Cordis composition with the application identity; override the collector endpoint when needed. The Desktop composition mounts it when [product analytics](../../client/product-analytics/README.md) is enabled; ordinary Web does not. The standalone example below reads `DSH_APP_VERSION`; Desktop supplies `DSH_CLIENT_VERSION` through its native launcher. Both must name the running release; the schema rejects an absent version.
 
 ```yaml
+- name: '@deepseek-ai/dsh-otel'
 - name: '@deepseek-ai/dsh-host-product-telemetry-otel'
   config:
     endpoint: https://dsh-otel-collector.deepseeksvc.com/v1/logs
@@ -65,7 +66,7 @@ The collector expects a string body and attributes containing strings, numbers, 
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-A private OTel logger feeds `BatchLogRecordProcessor` and the SDK HTTP delegate with its JSON log serializer. The delegate receives explicit headers and an HTTP agent; only shared timeout and compression settings use SDK environment resolution. The direct `@opentelemetry/core` dependency matches `sdk-logs` at 2.9.0 so exporter result enums share one TypeScript identity. The SDK owns queueing, transient-error retries, and compression; plugin disposal drains pending records with a bounded wait. Export completion is observed separately because SDK shutdown can resolve after a rejected export. No global OTel provider is installed.
+The adapter injects `otel` and creates an independent ordinary-event channel through `ctx.otel.createEventReporter()`. The [shared OTel plugin](../../telemetry/otel/README.md) owns SDK transport and batching; this adapter owns analytics configuration and its bounded shutdown wait. No global OTel provider is installed.
 
 [`src/index.ts`](src/index.ts) owns configuration and submission. No runtime invariant companion is published: delivery has no independent local acknowledgement to compare with the SDK's queue.
 

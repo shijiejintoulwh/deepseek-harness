@@ -493,6 +493,26 @@ export interface Config {
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-hmr -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-product-analytics -->
+<a id="deepseek-aidsh-client-product-analytics"></a>
+
+## `@deepseek-ai/dsh-client-product-analytics`
+
+- `inject`: `deepseekAccount` · `productTelemetry`
+- `refs`: `Volatile` (`@deepseek-ai/cordis`)
+- `source`: [`packages/client/product-analytics/src/index.ts:14`](../packages/client/product-analytics/src/index.ts)
+
+```ts config-catalog
+/** Application-owned collection policy; no user settings surface. */
+export interface Config {
+  /** Live application collection policy; ordinary Web does not mount this service. */
+  enabled: Volatile<boolean>
+  /** Running Desktop release, absent when unavailable. */
+  appVersion?: string
+}
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-product-analytics -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-shortcuts -->
 <a id="deepseek-aidsh-client-shortcuts"></a>
 
@@ -1435,7 +1455,8 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-host-product-telemetry-otel`
 
-- `source`: [`packages/host/product-telemetry-otel/src/index.ts:37`](../packages/host/product-telemetry-otel/src/index.ts)
+- `inject`: `otel`
+- `source`: [`packages/host/product-telemetry-otel/src/index.ts:18`](../packages/host/product-telemetry-otel/src/index.ts)
 
 ```ts config-catalog
 /** Collector routing, application identity, and bounded in-memory batch settings. */
@@ -2701,36 +2722,36 @@ export interface Config {
 
 ## `@deepseek-ai/dsh-session-telemetry-otel`
 
-- `inject`: `sessions`
+- `inject`: `sessions` · `otel`
 - `refs`: `BatchLogRecordProcessorOptions` (`@opentelemetry/sdk-logs`) · `OTLPExporterNodeConfigBase` (`@opentelemetry/otlp-exporter-base`)
-- `source`: [`packages/session/session-telemetry-otel/src/index.ts:100`](../packages/session/session-telemetry-otel/src/index.ts)
+- `source`: [`packages/session/session-telemetry-otel/src/index.ts:87`](../packages/session/session-telemetry-otel/src/index.ts)
 
 ```ts config-catalog
 /**
- * Plugin configuration: one sharing policy, two verbatim SDK option objects,
- * and one DSH-owned shutdown bound. Uploading modes validate their endpoint
+ * Plugin configuration: sharing policy, SDK transport options, byte/count queue
+ * settings, and an overall shutdown bound. Uploading modes validate their endpoint
  * and shutdown deadline at plugin load; `DISABLED` reads neither.
  */
 export interface Config {
   /** Defaults to `FEEDBACK_ONLY`: capture session history only when feedback is explicitly submitted. */
   mode?: SessionTelemetryMode
   /**
-   * Passed verbatim to the SDK's OTLP/HTTP log exporter — the complete
-   * `OTLPExporterNodeConfigBase` shape (`headers`, `timeoutMillis`,
-   * `compression`, `keepAlive`, …), owned and documented by the SDK. `url`
-   * is the one field this package requires and validates itself.
+   * Explicit SDK HTTP transport settings, including optional routing headers.
+   * Ambient credentials are not inherited. URL is required while uploading.
    */
   exporter?: OTLPExporterNodeConfigBase & {
     /** Full logs endpoint (e.g. `https://collector.example.com/v1/logs`). Required outside `DISABLED`; validated at load. */
     url?: string
   }
   /**
-   * Passed verbatim to `BatchLogRecordProcessor` (minus the exporter slot,
-   * which this plugin fills); the SDK owns and documents these knobs.
+   * Count, queue, cadence, and per-request watchdog settings for the byte-bounded
+   * processor. A watchdog warning never releases an unsettled transport slot.
    */
   processor?: Omit<BatchLogRecordProcessorOptions, 'exporter'>
   /** Maximum time spent awaiting the SDK provider's complete shutdown path. */
   shutdownTimeoutMillis?: number
+  /** Uncompressed OTLP request byte limit, at most 4,000,000. */
+  maxRequestBytes?: number
 }
 
 /** Session-sharing policy selected by {@link Config.mode}. */
@@ -3363,6 +3384,15 @@ export interface Config {
    * regain the foreground before `inferred_idle` settles; at least one `pollIntervalMs`.
    */
   handoffGraceMs?: number
+  /**
+   * Extra wait beyond `idleSilenceMs` and `handoffGraceMs`, once a prompt marker was seen but
+   * its printable tail has not arrived, before `inferred_idle` settles. The marker is written
+   * by the shell's own prompt function and the tail by the same render, so a missing tail is a
+   * delivery delay on a contended host rather than an absent prompt. Zero keeps the bound at
+   * `idleSilenceMs + handoffGraceMs`; any other value covers at least one `pollIntervalMs`, so a
+   * nonzero tolerance always contains a readiness poll.
+   */
+  promptTailGraceMs?: number
   /** Absolute bound for one send and the complete pwsh startup sequence. */
   timeoutMs?: number
   /** Grace before teardown escalates to `SIGKILL`. */
@@ -4121,7 +4151,7 @@ export interface Config {
 
 - `inject`: `web`
 - `refs`: `Volatile` (`@deepseek-ai/cordis`)
-- `source`: [`packages/web/web-search-deepseek/src/index.ts:46`](../packages/web/web-search-deepseek/src/index.ts)
+- `source`: [`packages/web/web-search-deepseek/src/index.ts:49`](../packages/web/web-search-deepseek/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config (all optional — `apply` fills env-var and constant defaults). */
@@ -4354,6 +4384,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 | `@deepseek-ai/dsh-llm` | — | [`packages/llm/llm/src/index.ts`](../packages/llm/llm/src/index.ts) |
 | `@deepseek-ai/dsh-lsp` | — | [`packages/lsp/lsp/src/index.ts`](../packages/lsp/lsp/src/index.ts) |
 | `@deepseek-ai/dsh-mcp-resources` | `tools` | [`packages/mcp/mcp-resources/src/index.ts`](../packages/mcp/mcp-resources/src/index.ts) |
+| `@deepseek-ai/dsh-otel` | — | [`packages/telemetry/otel/src/index.ts`](../packages/telemetry/otel/src/index.ts) |
 | `@deepseek-ai/dsh-sandbox-ssh` | `ssh` | [`packages/ssh/sandbox-ssh/src/index.ts`](../packages/ssh/sandbox-ssh/src/index.ts) |
 | `@deepseek-ai/dsh-session` | — | [`packages/core/session/src/index.ts`](../packages/core/session/src/index.ts) |
 | `@deepseek-ai/dsh-session-checkpoint-policy` | `llm` · `sessionPersistence` · `sessions` · `tools` | [`packages/session/session-checkpoint-policy/src/index.ts`](../packages/session/session-checkpoint-policy/src/index.ts) |
@@ -4424,6 +4455,7 @@ Imported as libraries by other packages; a `cordis.yml` cannot load them.
 | `@deepseek-ai/dsh-deque` | — | [`packages/util/deque/src/index.ts`](../packages/util/deque/src/index.ts) |
 | `@deepseek-ai/dsh-experimental-agent-team-profile` | — | [`packages/experimental/agent-team-profile/src/index.ts`](../packages/experimental/agent-team-profile/src/index.ts) |
 | `@deepseek-ai/dsh-experimental-browser-use-runtime` | — | [`packages/experimental/browser-use-runtime/src/index.ts`](../packages/experimental/browser-use-runtime/src/index.ts) |
+| `@deepseek-ai/dsh-experimental-schedule-bundle` | — | [`packages/experimental/schedule-bundle/src/index.ts`](../packages/experimental/schedule-bundle/src/index.ts) |
 | `@deepseek-ai/dsh-experimental-voice-input-bundle` | — | [`packages/experimental/voice-input-bundle/src/index.ts`](../packages/experimental/voice-input-bundle/src/index.ts) |
 | `@deepseek-ai/dsh-experimental-webworker-packer` | — | [`packages/experimental/webworker-packer/src/index.ts`](../packages/experimental/webworker-packer/src/index.ts) |
 | `@deepseek-ai/dsh-experimental-webworker-runtime` | — | [`packages/experimental/webworker-runtime/src/index.ts`](../packages/experimental/webworker-runtime/src/index.ts) |

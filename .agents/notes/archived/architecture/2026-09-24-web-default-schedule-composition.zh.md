@@ -1,6 +1,7 @@
 # Agent Note: 默认 Web 组合中的 Schedule
 
 Status: implemented
+Archived: 2026-09-25
 
 [English](2026-09-24-web-default-schedule-composition.md) | 中文
 

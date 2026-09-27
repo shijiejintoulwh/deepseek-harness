@@ -2801,6 +2801,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     declaredBy: 'an entry in \'root\' (client-ui-layout), so it exists while that entry is mounted',
     occupants: [
       'client-ui-chat QuotaNoticeHost id \'chat.quota-notice\'',
+      'client-ui-plugin-manager PluginRefreshToast id \'plugin-manager.refresh-toast\'',
       'client-ui-schedule ScheduleDeleteToast id \'schedule.delete-toast\'',
       'client-ui-settings-account DesktopOnboardingEntry id \'desktop-onboarding\'',
       'client-ui-settings-account AccountPlatformHost id \'account.platform-page\'',
@@ -3849,7 +3850,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       },
     ],
     ownerProps: [
-      '/** Owner share of one Session row action occurrence: the row the action belongs to. */\nexport interface SessionRowOwnerProps {\n  /** Session the row shows. */\n  sessionId: SessionId\n  /** Row display title: persisted title, project basename, or Session id. */\n  displayTitle: string\n}',
+      '/** Owner share of one Session row action occurrence: the row the action belongs to. */\nexport interface SessionRowOwnerProps {\n  /** Session the row shows. */\n  sessionId: SessionId\n  /** Row display title: persisted title, or empty when the Session has none. */\n  displayTitle: string\n}',
     ],
     ownerPropsReferences: [
       'SessionId',
@@ -3904,7 +3905,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       },
     ],
     ownerProps: [
-      '/** Owner share of one Session row action occurrence: the row the action belongs to. */\nexport interface SessionRowOwnerProps {\n  /** Session the row shows. */\n  sessionId: SessionId\n  /** Row display title: persisted title, project basename, or Session id. */\n  displayTitle: string\n}',
+      '/** Owner share of one Session row action occurrence: the row the action belongs to. */\nexport interface SessionRowOwnerProps {\n  /** Session the row shows. */\n  sessionId: SessionId\n  /** Row display title: persisted title, or empty when the Session has none. */\n  displayTitle: string\n}',
     ],
     ownerPropsReferences: [
       'SessionId',

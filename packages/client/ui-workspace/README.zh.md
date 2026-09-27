@@ -7,6 +7,8 @@ kind: "package-reference"
 
 [English](README.md) | 中文
 
+桌面端产品事件使用可选的[产品埋点服务](../product-analytics/README.zh.md)，不包含普通 Web 交互。
+
 ## 概述
 
 本包让用户浏览分组或扁平的 Session 列表、为新 Session 选择 Workspace，并通过添加、重命名、重排序、搜索、fork、归档和删除 Workspace 来管理 Workspace 与 Session；Session 行菜单及其悬停按钮是可由客户端插件扩展的 slot 列表。待处理交互显示为警告点，subagent 来源的 Session 则保持隐藏。处于空闲状态且未归档、其 Session 有活动定时任务的 Session 行会显示时钟标记，其悬浮卡片会列出这些任务。规范化后仍有差异的文件夹路径会保留为独立 Workspace。添加 Workspace 需要组合目录选择器；没有目录选择器时，添加操作不可用。
@@ -26,6 +28,8 @@ kind: "package-reference"
 ## 使用本包
 
 用侧边栏浏览 Workspace 及其 Session、重排它们并新建会话；在 Session Intent 主视觉区用选择器为新会话选择 Workspace。打开的 Workspace 默认显示五条空闲的非空白 Session。正在运行的 Session（包括有子会话正在运行的父会话）始终按原顺序显示，不占用这五条配额；当前选中的空白**新会话**在首条提示词落地前也作为额外行。每次点击**展开其余**最多再显示五条空闲 Session；全部显示后，**收起**恢复初始行数，但仍显示正在运行的 Session。关闭再打开 Workspace 也会恢复该折叠投影。
+
+未保存标题的历史会话显示本地化名称「未命名 / Untitled」，不使用目录名兜底。当前空会话仍显示「新会话」，其他空会话仍隐藏。重命名草稿使用已保存标题，无标题时留空；无标题行不提供标题复制。
 
 ### 重排序与视图选项
 

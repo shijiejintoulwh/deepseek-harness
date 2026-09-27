@@ -48,7 +48,7 @@ async function bench(runtime: 'web' | 'desktop' = 'desktop') {
   locale.setLocale('en')
   ctx.provide('locale', locale)
   const navigation = {
-    startSession: vi.fn(), forkSession: vi.fn(async () => {}), archiveSession: vi.fn(async (_sessionId: SessionId) => {}),
+    startSession: vi.fn(), forkSession: vi.fn(async () => 'fork-child' as SessionId), archiveSession: vi.fn(async (_sessionId: SessionId) => {}),
   }
   const controls = createWorkspaceShortcutControls()
   const fiber = ctx.plugin((scoped) => {
@@ -167,4 +167,16 @@ describe('workspace shortcut ownership', () => {
     expect(invoke()).toMatchObject({ status: 'blocked', reason: en['shortcut.noSession'] })
     expect(b.loadOlder).not.toHaveBeenCalled()
   })
+})
+
+it('opens an empty rename draft for unnamed history instead of its directory label', async () => {
+  const b = await bench()
+  const unnamed = row('a', true)
+  delete unnamed.title
+  unnamed.displayTitle = 'Default workspace'
+  b.list.set({ ...b.list.getSnapshot(), byId: { [unnamed.id]: unnamed } })
+  const command = b.commands.get('session.rename')!.resolve(context)
+  expect(command.status).toBe('handled')
+  if (command.status === 'handled') command.run()
+  expect(b.controls.state.getSnapshot().renameTarget).toEqual({ sessionId: 'a', currentTitle: '' })
 })

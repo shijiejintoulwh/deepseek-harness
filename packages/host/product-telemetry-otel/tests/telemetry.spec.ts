@@ -1,3 +1,4 @@
+import OTel from '@deepseek-ai/dsh-otel'
 import { createServer, type IncomingHttpHeaders } from 'node:http'
 import { once } from 'node:events'
 import { gunzipSync } from 'node:zlib'
@@ -58,7 +59,8 @@ function config(endpoint: string, overrides: Partial<Config> = {}): Config {
 
 function context() {
   const ctx = new Context()
-  cleanup.push(() => ctx.fiber.dispose())
+  const ready = ctx.plugin(OTel)
+  cleanup.push(async () => { await ready; await ctx.fiber.dispose() })
   return ctx
 }
 
@@ -200,4 +202,17 @@ describe('explicit product telemetry', () => {
     await pending.promise
     await vi.advanceTimersByTimeAsync(0)
   })
+})
+
+it('drains the dependent product channel when the shared OTel plugin unloads', async () => {
+  const target = await collector()
+  const ctx = new Context()
+  cleanup.push(() => ctx.fiber.dispose())
+  const service = await ctx.plugin(OTel)
+  await ctx.plugin(ProductTelemetry, config(target.endpoint))
+  ctx.productTelemetry.emit(event)
+  await service.dispose()
+  expect(ctx.get('otel')).toBeUndefined()
+  expect(ctx.get('productTelemetry')).toBeUndefined()
+  expect(target.captures).toHaveLength(1)
 })

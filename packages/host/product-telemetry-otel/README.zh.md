@@ -25,9 +25,10 @@ kind: "package-reference"
 <a id="use-this-package"></a>
 ## 使用本包
 
-在 Cordis 组合中挂载插件并提供应用标识；需要时可覆盖接收地址。内置 profile 不挂载本插件。启动器环境须将 `DSH_APP_VERSION` 设为运行中应用的发布版本；缺少版本时 schema 会拒绝配置。
+在 Cordis 组合中挂载插件并提供应用标识；需要时可覆盖接收地址。桌面组合在开启[产品埋点](../../client/product-analytics/README.zh.md)时挂载本插件；普通 Web 不挂载。下方独立示例读取 `DSH_APP_VERSION`；桌面端由原生启动器提供 `DSH_CLIENT_VERSION`。两者均须为运行中的发布版本；缺少版本时 schema 会拒绝配置。
 
 ```yaml
+- name: '@deepseek-ai/dsh-otel'
 - name: '@deepseek-ai/dsh-host-product-telemetry-otel'
   config:
     endpoint: https://dsh-otel-collector.deepseeksvc.com/v1/logs
@@ -65,7 +66,7 @@ kind: "package-reference"
 <details>
 <summary>实现细节——点击展开</summary>
 
-私有 OTel logger 将记录交给 `BatchLogRecordProcessor`，再由 SDK HTTP delegate 和 JSON 日志序列化器发送。delegate 使用显式请求头和 HTTP agent，只有共享的超时与压缩配置使用 SDK 环境变量解析。直接依赖的 `@opentelemetry/core` 与 `sdk-logs` 对齐为 2.9.0，使导出结果枚举共享同一个 TypeScript 类型身份。SDK 负责队列、临时错误重试与压缩；插件卸载时在限定时间内发送剩余记录。发送完成结果单独观测，因为 SDK 在发送被拒绝后仍可能正常完成退出。不安装全局 OTel provider。
+适配器注入 `otel`，通过 `ctx.otel.createEventReporter()` 创建独立的普通事件通道。[共享 OTel 插件](../../telemetry/otel/README.zh.md) 负责 SDK 传输和聚合；本适配器负责埋点配置及有期限的关闭等待。不安装全局 OTel provider。
 
 [`src/index.ts`](src/index.ts) 负责配置与提交。不发布运行时不变量伴随模块：本地没有独立的送达确认可与 SDK 队列比较。
 
