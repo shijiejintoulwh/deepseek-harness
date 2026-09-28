@@ -95,6 +95,8 @@ Chat 通过 `uiConversation.groups` 注册过程 Group Definition。React 通过
 
 过程组使用稳定的 `div` 布局盒子、滚动正文及不限高的内容盒子，后者报告正文内部的内容增长。业务样式必须适配组内及组边界间距，处理隐藏或空成员以及回答前的间距特例。CSS 变量不属于 Group Definition。
 
+运行中的分组标题、思考预览、工具与命令行、当前重试行以及底部运行状态使用共享的 [TextShimmer](../ui-primitives/README.zh.md#component-catalog)。每行的文字共用一道从左到右的高光，包括折叠的分组标题；图标和悬停箭头保留底色。工具和过程行之间相隔 6px；展开的分组标题与内容之间相隔 8px；Assistant 回复与相邻过程行之间相隔 12px；每轮完成／耗时控件周围保留 16px。隐藏行与空行（包括保留的空 slot 锚点）不产生间距。“深度求索”运行文字保留蓝色底色，并使用主题专用高光扫过文字。
+
 滚动边缘渐隐在 `ResizeObserver` 报告已展开组的布局后初始化；展开组时不会在 layout effect 中立即读取滚动尺寸。
 
 每个组拥有本地 `useDisclosure` 状态，组件保持挂载时，模式切换保留该状态。

@@ -5137,7 +5137,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'EventLogReporter',
-    declaration: 'export class EventLogReporter {\n    constructor(options: EventLogOptions);\n    emit(record: OTelEventRecord): void;\n    shutdown(): Promise<void>;\n}',
+    declaration: 'export class EventLogReporter {\n    constructor(options: EventLogOptions);\n    emit(record: OTelEventRecord): void;\n    async shutdown(signal?: AbortSignal): Promise<void>;\n}',
   },
   {
     name: 'EveryScheduleRecord',

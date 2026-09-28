@@ -30,6 +30,8 @@ loader-composition 的结算层级断言把 `JSON.stringify(settleReasons)` 作�
 
 在负载较高的 runner 上，两个插件管理器记录用例现在都能在该 run 仍在进行时观测到记录，而真正缺失的记录仍会以同一条断言失败。只有在操作始终不写记录时，这段有界等待才会付出 2 秒。
 
+[任务详情关闭断言](2026-09-28-detail-close-waits-on-observed-state.zh.md) 把同一条规则用在 web 客户端用例上：被采样的状态落在该用例已经等待过的那个列表之后一个 commit 的被动 effect 里。
+
 ## Deferred
 
 loader-composition 于 2026-09-25/26 的失败是一个对投递时序敏感的就绪窗口，而不是 product 逻辑错误；product 现在为它拥有一个文档化的容忍度：[提示符尾部宽限决策](../bug-fix/2026-09-27-pwsh-prompt-tail-grace.zh.md)。在 Windows 上 `isStdinWaiting` 返回 false、`foregroundPgid` 返回 shell 自身的 pid，因此 `stdin_read` 只能来自受控提示符尾部。原生 Windows 探测（Windows 11 ARM64 guest，8 vCPU，启用就绪探测）表明只要投递正常，快路径就是确定的：每次提示符渲染都是 OSC 标记独占一个 pty 分块，紧随其后的下一个分块是 5 字节的 `dsh> `，间隔 2–28 毫秒（56 次渲染），任何提示符之后都没有可打印文本，输出中也没有终端查询；21 次运行（基线、6 个 CPU burner、模拟 x64、4 个并发 pty 实例、以及以 Windows PowerShell 5.1 作为 shell）全部七次 send 都按提示符结算——六次 `stdin_read` 加 `exit` 命令的 `session_exit`。把每个 session 的提示符尾部扣留 4 秒可以精确复现上报的失败：`expected 4 to be greater than or equal to 6`，`settleReasons` 为 `["inferred_idle","stdin_read","stdin_read","stdin_read","stdin_read","session_exit","inferred_idle"]`，退化的结算带着 `promptSeen` 为 true、`promptTextSeen` 为 false、空尾部与 `idleFor` 3301/3313 毫秒（正是配置的上界），耗时 22.1/21.9 秒对照 CI 的 17.5/20.9 秒，且所有输出断言仍然通过。CI 的触发条件本身未能在本地复现，因此该用例保留其断言并在组合中提供 `promptTailGraceMs`：它度量受控提示符路径而不是宿主机的投递时序，且在完全没有提示符标记时仍然失败。

@@ -201,6 +201,7 @@
   display: inline-flex;
   align-items: center;
   width: fit-content;
+  max-width: 100%;
   padding: 2px 0;
   gap: 7px;
   border-radius: var(--dsw-radius-sm);
@@ -215,8 +216,10 @@
 }
 
 .retrySummary::after {
+  flex: none;
   width: 6px;
   height: 6px;
+  margin-right: 2px;
   border-right: 1.5px solid currentcolor;
   border-bottom: 1.5px solid currentcolor;
   content: '';
@@ -235,24 +238,8 @@
 }
 
 .retryText {
-  color: inherit;
-}
-
-.retryRow[data-active] .retryText {
-  background:
-    linear-gradient(
-      90deg,
-      var(--dsw-alias-label-tertiary) 0%,
-      var(--dsw-alias-label-tertiary) 40%,
-      var(--dsw-alias-label-secondary) 50%,
-      var(--dsw-alias-label-tertiary) 60%,
-      var(--dsw-alias-label-tertiary) 100%
-    );
-  background-position: 100% 50%;
-  background-size: 200% 100%;
-  background-clip: text;
-  color: transparent;
-  animation: retry-shimmer 1.6s ease-in-out infinite;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .retryRow[open] .retrySummary::after {
@@ -311,24 +298,6 @@
   margin-right: 6px;
   color: var(--dsw-alias-state-warn-primary);
   font-weight: 600;
-}
-
-@keyframes retry-shimmer {
-  from {
-    background-position: 100% 50%;
-  }
-
-  to {
-    background-position: 0 50%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .retryRow[data-active] .retryText {
-    background: none;
-    color: inherit;
-    animation: none;
-  }
 }
 
 .attachmentRow {

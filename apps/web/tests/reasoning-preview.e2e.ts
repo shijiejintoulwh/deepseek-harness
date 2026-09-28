@@ -102,7 +102,7 @@ it('shows completed paragraph first lines across blank lines with a right-edge f
 
       first.proceed.resolve(undefined)
       await second.arrived.promise
-      const preview = reasoning.locator('[data-streaming]')
+      const preview = reasoning.locator('[data-streaming]:not([inert] *)')
       await expect.poll(() => preview.textContent()).toBe('First paragraph')
       expect(await preview.isVisible()).toBe(true)
       await preview.evaluate((element) => { element.setAttribute('data-retained-preview', 'true') })

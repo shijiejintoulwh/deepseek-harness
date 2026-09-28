@@ -1481,7 +1481,7 @@ export interface Config {
   timeoutMillis: number
   /** Processor deadline for one batch export. */
   exportTimeoutMillis: number
-  /** Outer shutdown wait; pending exports may be lost after this deadline. */
+  /** Drain deadline; expiry cancels pending exports before disposal completes. */
   shutdownTimeoutMillis: number
 }
 ```
@@ -2557,19 +2557,20 @@ export interface JsonRpcConfig {
 ## `@deepseek-ai/dsh-session-log-deepseek`
 
 - `inject`: `deepseekLlmApiExtensions` · `sessions`
+- `refs`: `Volatile` (`@deepseek-ai/cordis`)
 - `source`: [`packages/session/session-log-deepseek/src/index.ts:39`](../packages/session/session-log-deepseek/src/index.ts)
 
 ```ts config-catalog
 /** Session-log request contribution configuration. */
 export interface Config {
   /** Contribute `dsh_session_log` to official DeepSeek requests. Defaults to `true`. */
-  enabled?: boolean
+  enabled: Volatile<boolean>
   /**
    * Largest serialized `dsh_session_log` field, in UTF-8 bytes, that one request carries.
    * A request uploads the longest pending event prefix that fits; later requests continue
    * after its acceptance. Defaults to 8 MiB.
    */
-  maxBytes?: number
+  maxBytes: number
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-session-log-deepseek -->
@@ -4346,6 +4347,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 | `@deepseek-ai/dsh-client-ui-settings-general` | — | [`packages/client/ui-settings-general/src/index.ts`](../packages/client/ui-settings-general/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-plugin-inventory` | — | [`packages/client/ui-settings-plugin-inventory/src/index.ts`](../packages/client/ui-settings-plugin-inventory/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-plugins` | — | [`packages/client/ui-settings-plugins/src/index.ts`](../packages/client/ui-settings-plugins/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-settings-session-log` | — | [`packages/client/ui-settings-session-log/src/index.ts`](../packages/client/ui-settings-session-log/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-shell` | — | [`packages/client/ui-settings-shell/src/index.ts`](../packages/client/ui-settings-shell/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-subagent` | — | [`packages/client/ui-settings-subagent/src/index.ts`](../packages/client/ui-settings-subagent/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-settings-web-search` | — | [`packages/client/ui-settings-web-search/src/index.ts`](../packages/client/ui-settings-web-search/src/index.ts) |

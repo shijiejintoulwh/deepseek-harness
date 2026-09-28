@@ -47,3 +47,5 @@ The WebKit case the serial master lane also failed is not a scenario race and st
 ## Consequences
 
 The three scenarios render the aria their goldens record whatever state the harness arrives in, and no golden, product surface, or timeout changed. The input state is now owned by each capture: a scenario that captures a hovered row, a focused Tooltip anchor, or a value published by a later Host read must establish that state itself. `document-preview.e2e.ts`'s spreadsheet-selection read has the same class of defect and stays with its own change.
+
+[The task-detail close note](2026-09-28-detail-close-waits-on-observed-state.md) records the same class in the client unit lane, where the sampled state arrived through a post-commit effect rather than through an unsettled input.

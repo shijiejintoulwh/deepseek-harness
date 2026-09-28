@@ -264,3 +264,11 @@
     padding-left: 12px;
   }
 }
+
+.headerContent {
+  flex: 1;
+}
+
+.headerContentLayout {
+  gap: 6px;
+}

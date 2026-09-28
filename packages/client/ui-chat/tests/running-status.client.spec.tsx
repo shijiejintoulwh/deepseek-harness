@@ -28,7 +28,7 @@ describe('RunningStatus', () => {
     expect(vi.getTimerCount()).toBe(0)
     view.set(1_000)
     expect(view.content()?.textContent).toMatch(/^深度求索中，用时 \d+秒\.\.\.$/)
-    expect(view.container.querySelectorAll('[data-text-shimmer]')).toHaveLength(1)
+    expect(view.content()?.querySelectorAll('[data-shimmer="true"]')).toHaveLength(1)
     expect(vi.getTimerCount()).toBe(1)
     view.set()
     expect(view.content()?.textContent).toBe('深度求索中...')

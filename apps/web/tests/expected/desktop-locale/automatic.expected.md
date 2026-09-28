@@ -29,4 +29,6 @@
   - button "编辑快捷键"
   - text: 繁忙时的发送行为 智能体运行时 Enter 键和发送按钮的行为；Cmd/Ctrl+Enter 使用另一行为
   - button "排队发送"
+  - text: 在使用官方模型 API 时上传 Session Log 帮助改进 DeepSeek 模型与产品
+  - switch "在使用官方模型 API 时上传 Session Log"
   - text: 当前版本：{{version}}

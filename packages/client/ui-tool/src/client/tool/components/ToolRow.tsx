@@ -213,7 +213,7 @@ export const ToolRow = memo(function ToolRow({
     /* An empty summary drops the separator with it (a row that is only
        its title shows no trailing dot). */
     <>
-      <span className={css.sep} aria-hidden />
+      <span className={css.sep} data-shimmer-decoration aria-hidden />
       {openFile !== undefined ? (
         <button
           type="button"
@@ -221,7 +221,7 @@ export const ToolRow = memo(function ToolRow({
           onClick={openFile}
           onKeyDown={summaryLinkKeyDown}
         >
-          <TextShimmer active={running}>{summaryText}</TextShimmer>
+          <TextShimmer>{summaryText}</TextShimmer>
         </button>
       ) : linkHref !== undefined ? (
         <a
@@ -232,7 +232,7 @@ export const ToolRow = memo(function ToolRow({
           onClick={stopLinkClick}
           onKeyDown={summaryLinkKeyDown}
         >
-          <TextShimmer active={running}>{summaryText}</TextShimmer>
+          <TextShimmer>{summaryText}</TextShimmer>
         </a>
       ) : (
         <span
@@ -242,11 +242,11 @@ export const ToolRow = memo(function ToolRow({
             state === 'stopped' && css.stoppedSummary,
           )}
         >
-          <TextShimmer active={running}>{summaryText}</TextShimmer>
+          <TextShimmer>{summaryText}</TextShimmer>
         </span>
       )}
       {suffix !== null && (
-        <TextShimmer className={clsx(css.summarySuffix, suffix === diffStat && css.diffStat)} active={running}>{suffix}</TextShimmer>
+        <TextShimmer className={clsx(css.summarySuffix, suffix === diffStat && css.diffStat)}>{suffix}</TextShimmer>
       )}
     </>
   ), [diffStat, summaryLinkKeyDown, linkHref, openFile, running, state, suffix, summaryText])

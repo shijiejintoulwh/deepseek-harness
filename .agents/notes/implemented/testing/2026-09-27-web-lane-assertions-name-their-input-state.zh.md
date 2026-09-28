@@ -47,3 +47,5 @@ install-cancel 场景仍带有本次改动未消除、且原因尚未定位的�
 ## Consequences
 
 三个场景无论测试框架以何种状态进入，都渲染其 golden 记录的 aria，且没有任何 golden、产品界面或超时被改动。输入状态现在由每次捕获自己拥有：凡是捕获悬停行、聚焦的 Tooltip 锚点，或由后续 Host 读取发布的值的场景，都必须自行确立该状态。`document-preview.e2e.ts` 的电子表格选区读取属于同一类缺陷，仍留给它自己的改动。
+
+[任务详情关闭断言](2026-09-28-detail-close-waits-on-observed-state.zh.md) 记录了同一类缺陷在客户端单测 lane 上的实例：被采样的状态来自一个提交后 effect，而不是来自尚未结算的输入。
