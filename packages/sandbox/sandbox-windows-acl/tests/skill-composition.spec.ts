@@ -41,7 +41,7 @@ it.skipIf(process.platform !== 'win32')('loads and unloads the ACL skill through
     expect((await ctx.skills.list()).map(entry => entry.name)).toEqual([ACL_DIAGNOSIS_SKILL])
     const loaded = await ctx.skills.get(ACL_DIAGNOSIS_SKILL)
     expect(loaded).toMatchObject({ source: 'bundled', provider: 'dsh-windows-acl' })
-    expect(loaded?.content).toContain('Stop after any failed/refused repair')
+    expect(loaded?.content).toContain('Stop after any failed or refused repair')
     if (loaded?.resourceBase?.kind !== 'directory') throw new Error('Missing extracted skill resources')
     const resources = loaded.resourceBase.path
     expect(readFileSync(join(resources, 'scripts/diagnose-windows-sandbox-acl.ps1'), 'utf8'))

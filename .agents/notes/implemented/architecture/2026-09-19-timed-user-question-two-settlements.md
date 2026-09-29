@@ -1,6 +1,6 @@
 # Agent Note: Timed user questions as two settlements
 
-Status: proposed
+Status: implemented
 
 English | [中文](2026-09-19-timed-user-question-two-settlements.zh.md)
 
@@ -10,14 +10,14 @@ A question can block an agent even when useful work does not depend on the answe
 
 The foreground tool result and the eventual answer have different lifetimes. A `user-questions/request` waterfall settles once; keeping it alive after returning pending creates a second answer path that outlives its caller. Countdown, focus, and editing also have different owners from durable question state.
 
-## Proposal
+## Decision
 
-Keep foreground answers on the existing Remote Event waterfall. A timeout ends that request and returns pending; a later answer uses a business RPC that steers a durable user message. The claim stream controls the foreground wait only. It neither transports answers nor replaces the Remote Event.
+Foreground answers use the existing Remote Event waterfall. A timeout ends that request and returns pending; a later answer uses a business RPC that steers a durable user message. The claim stream controls the foreground wait only. It neither transports answers nor replaces the Remote Event.
 
 ### Modes and scope
 
 - The default `mode: legacy` retains the blocking schema and `ask()` path. Explicit `mode: timed` adds `timeout`, using the configured default of 120 seconds when omitted.
-- A positive integer timeout selects `askTimed()`; `-1` selects blocking `ask()`. A blocking call made with the timed schema still participates in timed-question projection and review; it is not identical to a legacy call.
+- A positive integer timeout selects `askTimed()`; `-1` selects blocking `ask()`. A native blocking call made with the timed schema still participates in timed-question projection and review; it is not identical to a legacy call.
 - Plan review retains `ask()`, its `plan-review` intent, and `BAD_INTENT` validation. This decision does not move plan review to another package.
 - Human interaction requires the exact live runtime root when an Agent is supplied. A stale instance fails with `CALLER_NOT_LIVE`; an owned child fails with `DELEGATED_CALLER`. Durable Session lineage does not prevent a resumed runtime root from asking.
 
@@ -46,27 +46,27 @@ Client countdown expiry rejects the waterfall with `ASK_TIMED_OUT`. Unattended H
 
 ### Durable state and late answers
 
-The `userQuestions` projection reconstructs question state from existing Session events. It recognises the timed schema by the `timeout` parameter recorded in `request/header`; legacy calls are not tracked. A valid `tool/call` opens a question. Its `tool/result` makes it continued for pending or `TOOL_OUTCOME_UNKNOWN`, settles it with a valid answer batch, or removes it for another result or failure.
+The `userQuestions` projection reconstructs question state from existing Session events. For native calls, it recognises the timed schema by the `timeout` parameter recorded in `request/header`; legacy calls are not tracked. A valid `tool/call` opens a question. Its `tool/result` makes it continued for pending or `TOOL_OUTCOME_UNKNOWN`, settles it with a valid answer batch, or removes it for another result or failure. A PTC sub-call enters the projection when its `tool/ptc-dispatch` result is pending, since only `run_code` appears in the model request header.
 
-A continued question accepts `answer(agent, callId, answer)`. The method returns `false` for an unknown or non-continued call and throws `BAD_ANSWER` unless the batch names each question exactly once. Accepted answers use `agent.steer(createUserMessage(...))`, source `{ kind: 'user-question-reply', callId, outcome: 'answered' }`, and JSON text containing `answer_to_pending_question`, the call id, original questions, and answers. Remote Agent resolution from the Session id resumes a root when needed; the `answer()` body does not own that resume operation.
+A continued question accepts `answer(agent, callId, answer)`. The method returns `false` for an unknown or non-continued call, throws `REPLY_QUEUED` while another reply awaits admission, and throws `BAD_ANSWER` unless the batch names each question exactly once. Accepted answers use `agent.steer(createUserMessage(...))`, source `{ kind: 'user-question-reply', callId, outcome: 'answered' }`, and JSON text containing `answer_to_pending_question`, the call id, original questions, and answers. Remote Agent resolution from the Session id resumes a root when needed; the `answer()` body does not own that resume operation.
 
-The inbox message is the durable reply. `agent/inbox/spliced` settles the question when the message is queued; the later admitted `user/message` is idempotent for that settlement. Settled answer batches remain in the projection so the original tool row can show late answers even though its own result remains pending. Unusable recorded reply text settles with an empty batch.
+The inbox message is the durable queued reply. A per-Session reservation covers the interval from queuing through claim and admission; claiming a restored inbox reply creates the reservation again. Admission as `user/message` settles the question, while discard or a Turn that ends without admission releases the reservation for another answer. Settled answer batches remain in the projection so the original tool row can show late answers even though its own result remains pending. Unusable recorded reply text settles with an empty batch.
 
-No new Session event type or wait-state log is needed. The message-source extension requires the repository's persistence-type acknowledgement. `dismissed` remains readable for historical records but has no producer: hiding a panel does not manufacture a reply.
+No new Session event type or wait-state log is needed. The message-source extension requires the repository's persistence-type acknowledgement. Hiding a panel does not manufacture a reply.
 
 ### Card state and delivery races
 
-`QuestionCards` shares one `PendingQuestion` between the live request and the continued projection, keyed by Session and `callId`. A blocking request without a call id has its own per-request card. An open card submits through its waterfall; without that channel it disables submission. A continued card uses the late-answer RPC.
+`QuestionCards` shares one `PendingQuestion` between the live request and the continued projection, keyed by Session and `callId`. A forwarded request keeps its card through the claim's first frame even before the projection lists it. A blocking request without a call id has its own per-request card with a reload-unique key, so an old persisted draft cannot attach to another request. An open card submits through its waterfall; without that channel it disables submission. A continued card uses the late-answer RPC.
 
-A waterfall submission has no delivery acknowledgement. The Gateway can discard an outcome that loses a settlement race. The card therefore retains its draft and stays busy until projection reconciliation. If the question becomes continued during submission, the controls re-arm with a resubmit hint; the user can submit the retained draft through RPC. This is not automatic retry or a guarantee that every local submission reaches the model.
+A waterfall submission has no delivery acknowledgement. The Gateway can discard an outcome that loses a settlement race. The card therefore retains its draft and stays busy until projection reconciliation. If the question becomes continued during submission, the controls re-arm with a resubmit hint; the user can submit the retained draft through RPC. An accepted RPC submission steers a reply toward the nearest step without settling the question, and the panel closes. A current tool wait must finish before that step can read the reply; if the steer is discarded, the question can be reopened and answered again. This is not automatic retry or a guarantee that every local submission reaches the model.
 
-A tool-call-keyed card is removed when its call is absent from the active projection and no waterfall remains. Removal closes the card and clears its draft. Neither a local submission nor a transport cancel frame alone decides that the question is answered. An unkeyed blocking card ends with its waterfall; closing that blocking panel rejects with `ASK_CANCELLED`.
+A tool-call-keyed card is removed when its call is absent from the active projection and no forwarded request remains. Removal closes the card and clears its draft. Neither a local submission nor a transport cancel frame alone decides that the question is answered. An unkeyed blocking card ends with its waterfall; closing that blocking panel rejects with `ASK_CANCELLED`.
 
 ### Local countdown and panel actions
 
 The Client computes `Date.now() + remainingMs`. Manual focus on a pristine answer surface pauses its countdown, and blur resumes the preserved remainder. Focus before the claim handshake remains effective when the deadline arrives; blur before the handshake does not create a timer. First edit or Take time freezes the countdown, with that disposition saved beside the browser-local draft.
 
-Autofocus applies only when the answer channel is ready, no countdown is active, and the card is not locked. Hiding a timed-call panel leaves its claim and countdown running; its tool row can reopen it. A settled call opens a read-only panel from recorded questions and answers, not another answer channel.
+Autofocus applies only when the answer channel is ready, no countdown is active, and the card is not locked. Hiding a timed-call panel leaves its claim and countdown running; its tool row can reopen it. Once a late reply enters the Inbox, the tool row displays its submitted answers and “View answers” expands the read-only transcript while admission is pending. A settled call opens a read-only panel with recorded answers. Discarding the queued reply restores the answer action.
 
 ### Reply node and grouping
 
@@ -86,7 +86,7 @@ This decision adds no process-role field, independent-layout flag, user-message 
 
 **Delegate every timed request immediately.** Dispatching to an intentionally empty answerer set wastes the existing blocking-answer path and requires special handling of `NO_PROVIDER`. Delegation is for an unavailable answerer, not the timed mode itself.
 
-**Persist a whole-value wait/focus/edit stream or use Host focus leases.** Durable question status is derivable from tool and inbox events. Focus and editing are local UI state; logging them or synchronising focus leases adds Host state without making multiple Clients share one editing session.
+**Persist a whole-value wait/focus/edit stream or use Host focus leases.** Durable question status is derivable from tool and admitted user events. Focus and editing are local UI state; logging them or synchronising focus leases adds Host state without making multiple Clients share one editing session.
 
 **Reclassify JSON inside generic `MessageItem`, borrow the relay form, or use the default context row.** Parsing text to identify the business message confuses its source with its content; the relay form describes another agent's message, and a generic context row exposes JSON. A dedicated source, Definition, and renderer own the question presentation.
 
@@ -94,20 +94,24 @@ This decision adds no process-role field, independent-layout flag, user-message 
 
 **A log-only close event or a manufactured dismissal message on panel close.** A log-only close hides the user's decision from the model and adds another durable mechanism. Manufacturing a reply treats hiding the panel as an answer. Panel close therefore leaves a timed question answerable.
 
-**A dedicated late-reply Session event beside the inbox message.** The inbox splice and admitted user message already record the reply. A third event duplicates the same fact and adds another persistence type.
+**A dedicated late-reply Session event beside the inbox message.** The inbox splice records the queued reply and the admitted user message records its delivery. A third event duplicates those facts and adds another persistence type.
 
-## Acceptance criteria
+## Verification
 
-- Service tests cover claimed and unclaimed waits, last-claim disconnect, cancellation, timeout error mapping, continued-only answers, and exact answer-id validation.
-- Projection tests distinguish legacy and timed schemas and cover pending, answered, other failures, resume repair, and duplicate inbox/message settlement.
-- Client tests cover claim retention through Host acceptance, focus before handshake, indefinite waits, draft retention, RPC resubmission, and panel hiding/reopening.
-- Grouping and browser replay cover one rendered reply with both projections retained, ordinary collapsed placement, disclosure ordering, and the original tool row's read-only late-answer panel.
-- Legacy question round trips, cancellation, plan-review intent, and Session remounts retain their existing behavior. Live multi-Client delivery races and real Host restart remain integration coverage gaps beyond isolated lifecycle and projection tests.
+- [Service tests](../../../../packages/interaction/user-questions/tests/user-questions.spec.ts) and [wait tests](../../../../packages/interaction/user-questions/tests/timed-wait.spec.ts) cover claimed and unclaimed waits, last-claim disconnect, cancellation, timeout error mapping, continued-only answers, and exact answer-id validation.
+- [Projection tests](../../../../packages/interaction/user-questions/tests/projection.spec.ts) distinguish legacy and timed schemas and cover native and PTC pending calls, other failures, resume repair, queued reply cancellation, and admitted settlement.
+- [Client listener tests](../../../../packages/client/ui-user-questions/tests/browser-plugin.client.spec.ts) and [composer tests](../../../../packages/client/ui-user-questions/tests/user-questions-composer.client.spec.tsx) cover claim retention through Host acceptance, focus before handshake, indefinite waits, draft retention, RPC resubmission, and panel actions.
+- [Grouping tests](../../../../packages/client/ui-chat/tests/process-groups.client.spec.ts) and [browser replay](../../../../apps/web/tests/question-composer.e2e.ts) cover one rendered reply with both projections retained, ordinary collapsed placement, disclosure ordering, and the original tool row's read-only late-answer panel.
+- Legacy round-trip, cancellation, plan-review intent, and Session-remount regressions remain covered by their owning tests. Live multi-Client delivery races and real Host restart remain integration coverage gaps beyond isolated lifecycle and projection tests.
 
-## Risks
+## Consequences
+
+The model can continue independent work while the question remains answerable. Business-owned timing and reply rendering reuse the existing transport and conversation APIs, at the cost of local rather than globally coordinated waiting and ordinary folded visibility.
 
 - Take time affects only one Client. Another Client can answer or expire the shared waterfall; local focus does not establish a global hold.
 - A terminal claim-stream failure can reject the foreground question rather than produce pending. No unattended-wait fallback is provided for that failure.
 - Host and Client clocks need not align, but Client system-clock changes can move expiry and transport latency can delay the local countdown's start.
 - The duplicate projections remain stored. Aggregation adds linear scans during structural grouping rebuilds; ordinary text-only streaming updates retain their incremental path. This is an algorithmic bound, not a measured latency claim.
 - Unanswered continued questions can remain after reopening a Session. Panel close records nothing, and visibility follows normal folding rather than an always-visible reply guarantee.
+- A queued late reply can be canceled before the agent admits it. The question stays answerable until an admitted `user/message` records the answer.
+- A PTC sub-call interrupted before its `tool/ptc-dispatch` result is recorded cannot be reconstructed from the parent `run_code` failure, so it cannot take a late answer after recovery.

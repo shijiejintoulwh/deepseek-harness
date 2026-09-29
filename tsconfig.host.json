@@ -31,6 +31,7 @@
     "apps/web/tests/auto-review-denial.e2e.ts",
     "apps/web/tests/scaffold-generation.spec.ts",
     "apps/web/tests/default-model.e2e.ts",
+    "apps/web/tests/model-menu-observer.e2e.ts",
     "apps/web/tests/github-ready-review.e2e.ts",
     "apps/web/tests/streaming-fence-highlight.e2e.ts",
     "apps/web/tests/declared-reasoning.e2e.ts",

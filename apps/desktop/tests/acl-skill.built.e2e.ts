@@ -55,7 +55,7 @@ try {
   const directory = skill.resourceBase.path;
   assert.ok(!directory.includes('.asar'));
   const output = execFileSync('pwsh', ['-NoProfile', '-NonInteractive', '-File',
-    join(directory, 'scripts/diagnose-windows-sandbox-acl.ps1'), '-Path', root],
+    join(directory, 'scripts/diagnose-windows-sandbox-acl.ps1'), '-Path', root, '-AllowRoot', root, '-Out', join(root, 'out')],
     { encoding: 'utf8', timeout: 30000, windowsHide: true });
   assert.ok(output.includes('READABLE=True'));
   await fiber.dispose();

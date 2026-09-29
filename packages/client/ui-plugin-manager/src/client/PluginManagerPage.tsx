@@ -653,6 +653,7 @@ function terminalLabels(t: Translate): TerminalBlockLabels {
 const INPUT_PROBLEM_KEYS = {
   'invalid-spec': 'installProblemInvalid',
   'already-installed': 'installProblemInstalled',
+  'shipped': 'installProblemShipped',
   'not-found': 'installProblemNotFound',
   'not-a-package': 'installProblemNotPackage',
   'not-a-bundle': 'installProblemNotBundle',
@@ -668,11 +669,9 @@ interface GuideExample {
   readonly hintKey: PluginManagerLocaleKey
 }
 
-/** The spec forms the install guide shows, each with an example the person can drop into the field. */
+/** The spec form the install guide shows, with an example the person can drop into the field. */
 const GUIDE_EXAMPLES = [
   { key: 'id', titleKey: 'installGuideIdTitle', exampleKey: 'installGuideIdExample', hintKey: 'installGuideIdHint' },
-  { key: 'git', titleKey: 'installGuideGitTitle', exampleKey: 'installGuideGitExample', hintKey: 'installGuideGitHint' },
-  { key: 'path', titleKey: 'installGuidePathTitle', exampleKey: 'installGuidePathExample', hintKey: 'installGuidePathHint' },
 ] as const satisfies readonly GuideExample[]
 
 /** The one-line reading of a classified pnpm failure. */
@@ -730,7 +729,8 @@ function failureText(failure: InstallState['failure'], t: Translate, install?: P
   if (failure === null) return t('installFailureGeneric')
   // A compatibility refusal is the package's own answer, whatever pnpm's exit classified the run as.
   if (failure.code === 'incompatible-version') {
-    return managementText({ code: failure.code, ...failure.incompatible === undefined ? {} : { incompatible: failure.incompatible } }, t)
+    const incompatible = failure.incompatible === undefined ? {} : { incompatible: failure.incompatible }
+    return managementText({ code: failure.code, installing: true, ...incompatible }, t)
   }
   // Blocked scripts the Host could not name leave the person to allow them in the profile's pnpm settings by hand.
   if (failure.kind === 'build-blocked' && !failure.pendingBuilds?.length) return t('installFailureBuildBlockedManual')
@@ -850,7 +850,7 @@ function InstallDialog({
               variant="primary"
               autoFocus
               onClick={() => {
-                // The mirror is already asked, so the form opens with the guide to the other kinds of spec.
+                // The mirror is already asked, so the form opens with the package-name guide.
                 if (anotherWay) setGuideOpen(true)
                 onUseGithubMirror()
               }}
@@ -892,7 +892,10 @@ function InstallDialog({
           <div className={css.installFooter}>
             <p className={css.installSafety} role="note">
               <IconWarningOutlineRegular size={14} aria-hidden="true" />
-              <span>{t('installGuideSafety')}</span>
+              <span className={css.installSafetyText}>
+                <span>{t('installGuideSafety')}</span>
+                <span>{t('installUpgradeNotice')}</span>
+              </span>
             </p>
             <Button variant="primary" className={css.wide} disabled={checking || empty} aria-busy={checking} onClick={onRun}>
               {checking ? <StateDot state="ongoing" /> : null}
@@ -959,9 +962,8 @@ function InstallDialog({
             ? (
               <div id={guideId} className={css.guide} data-install-guide>
                 <ol className={css.guideList}>
-                  {GUIDE_EXAMPLES.map(({ key, titleKey, exampleKey, hintKey }, index) => (
+                  {GUIDE_EXAMPLES.map(({ key, titleKey, exampleKey, hintKey }) => (
                     <li key={key} className={css.guideItem}>
-                      <span className={css.guideIndex} aria-hidden="true">{index + 1}</span>
                       <div className={css.guideMain}>
                         <span className={css.guideTitle}>{t(titleKey)}</span>
                         <span className={css.guideHint}>{t(hintKey)}</span>

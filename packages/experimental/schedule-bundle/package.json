@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-experimental-schedule-bundle",
   "description": "Optional bundle that adds Schedule, its task page, and time context to the Web composition",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "icon": "./icon.svg",
   "publishConfig": {
     "access": "public"

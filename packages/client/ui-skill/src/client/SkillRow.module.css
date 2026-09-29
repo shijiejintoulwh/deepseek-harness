@@ -12,6 +12,12 @@
   align-items: center;
   height: calc(24px + var(--dsh-content-font-delta, 0px));
   min-width: 0;
+  color: var(--dsw-alias-label-tertiary);
+  transition: color 100ms ease;
+}
+
+.row:hover {
+  color: var(--dsw-alias-label-secondary);
 }
 
 .row[data-expandable] {
@@ -27,7 +33,7 @@
   align-items: center;
   justify-content: center;
   margin-right: 6px;
-  color: var(--dsw-alias-label-tertiary);
+  color: inherit;
 }
 
 .leading svg {
@@ -36,7 +42,7 @@
 }
 
 .chevron {
-  color: var(--dsw-alias-label-secondary);
+  color: inherit;
 }
 
 .iconIdle {
@@ -65,7 +71,6 @@
   flex: none;
   font-size: var(--dsh-content-font-size-secondary, 13px);
   line-height: calc(24px + var(--dsh-content-font-delta, 0px));
-  color: var(--dsw-alias-label-secondary);
 }
 
 .separator {
@@ -85,7 +90,6 @@
   white-space: nowrap;
   font-size: var(--dsh-content-font-size-secondary, 13px);
   line-height: calc(24px + var(--dsh-content-font-delta, 0px));
-  color: var(--dsw-alias-label-tertiary);
 }
 
 .errorSummary {
@@ -189,6 +193,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .row,
   .iconIdle,
   .chevronHover,
   .inspectButton {

@@ -86,7 +86,6 @@ export const ReasoningRow = memo(function ReasoningRow({ text, running, usePrese
         rowClassName={css.row}
         leadingClassName={css.leading}
         titleClassName={css.title}
-        chevronClassName={css.chevron}
         icon={THINK_ICON}
         title={t('message.think')}
         running={running}

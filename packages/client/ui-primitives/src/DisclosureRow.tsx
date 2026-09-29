@@ -4,7 +4,7 @@ import { IconChevronDownOutlineRegular, IconChevronUpOutlineRegular } from './ic
 import { TextShimmer } from './TextShimmer.tsx'
 import css from './DisclosureRow.module.css'
 
-/** Shared 24px disclosure chrome for compact flow rows. */
+/** Shared 24px process row: tertiary text and icons, secondary on hover. */
 export interface DisclosureRowProps {
   icon: ReactNode
   title: string
@@ -96,6 +96,7 @@ export const DisclosureRow = memo(function DisclosureRow({
           <button
             type="button"
             className={clsx(css.leading, leadingClassName)}
+            aria-label={title}
             aria-expanded={open}
             onClick={toggleFromLeading}
           >

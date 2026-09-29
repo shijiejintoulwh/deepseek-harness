@@ -835,13 +835,18 @@ describe('web e2e: plugin manager', () => {
     const install = dialog.getByRole('button', { name: '安装', exact: true })
     expect(await install.isDisabled()).toBe(true)
     expect(await dialog.getByRole('note').textContent()).toContain('请确认插件来源可信')
+    expect(await dialog.getByRole('note').textContent()).toContain('暂不支持自动更新')
     await dialog.getByRole('button', { name: '插件安装引导和示例' }).click()
+    // The guide carries the package-name example only; the former template strings keep their replacement reminder.
+    await expect.poll(() => dialog.getByRole('listitem').count()).toBe(1)
+    await dialog.getByRole('button', { name: '填入示例 dsh-plugin-whale-pet' }).click()
+    expect(await field.inputValue()).toBe('dsh-plugin-whale-pet')
+    expect(await dialog.getByRole('status').count()).toBe(0)
     for (const [example, hint] of [
       ['https://github.com/author/dsh-plugin', '请替换为实际的 Git 仓库地址'],
       ['/Users/name/my-plugin', '请替换为本机插件目录的实际路径'],
-    ]) {
-      await dialog.getByRole('button', { name: `填入示例 ${example}` }).click()
-      expect(await field.inputValue()).toBe(example)
+    ] as const) {
+      await field.fill(example)
       expect(await dialog.getByRole('status').textContent()).toBe(hint)
     }
     await field.fill('/actual/plugin-directory')
@@ -852,7 +857,7 @@ describe('web e2e: plugin manager', () => {
     await field.fill('@fixture/bundle')
     await install.click()
     await dialog.getByRole('alert').waitFor({ timeout: 5_000 })
-    expect(await dialog.getByRole('alert').textContent()).toBe('该插件已安装')
+    expect(await dialog.getByRole('alert').textContent()).toBe('该插件已安装。如需升级，请卸载后重新安装')
     // A path the Host cannot read as a package is refused with its reason, and the spec stays editable.
     await field.fill(join(scaffold.harnessHome, 'no-such-plugin'))
     await install.click()

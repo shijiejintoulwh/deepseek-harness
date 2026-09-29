@@ -148,7 +148,8 @@ export function offeredRegistries(registries: PluginRegistries | null): Registry
 
 /** Why the typed spec was refused before anything installed. */
 export interface InstallInputError {
-  readonly problem: PluginInspectProblem
+  /** The Host's refusal, or `shipped` for a listed bundle the installation supplies. */
+  readonly problem: PluginInspectProblem | 'shipped'
   readonly reason: string
   /** The registries the check asked, in order, when the refusal came from asking them. */
   readonly registries?: readonly Registry[]
@@ -838,9 +839,10 @@ export class PluginManagerController {
       this.ctx.get('productAnalytics')?.track('plugin_install_click', { input_value: sanitizeInstallInput(spec) })
     }
     // A name the list already shows is refused at once, before the Host is asked.
-    if (state.packages.some(pkg => pkg.name === spec)) {
+    const listed = state.packages.find(pkg => pkg.name === spec)
+    if (listed !== undefined) {
       this.finishAnalytics('failed', 'already-installed')
-      this.patchInstall({ phase: 'idle', inputError: { problem: 'already-installed', reason: spec } })
+      this.patchInstall({ phase: 'idle', inputError: { problem: listed.installed ? 'already-installed' : 'shipped', reason: spec } })
       return
     }
     const choice = install.registry

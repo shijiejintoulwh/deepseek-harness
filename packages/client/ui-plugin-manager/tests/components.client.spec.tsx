@@ -15,7 +15,7 @@ import { PluginRefreshToast } from '../src/client/PluginRefreshToast.tsx'
 import type { PluginManagerPageProps } from '../src/client/index.ts'
 import type { ConfigLedger } from '../src/client/config-ledger.ts'
 import { rowKey, type InstallState, type PackageRow, type PackageView, type PluginManagerState } from '../src/client/manager-store.ts'
-import { en, zh, type PluginManagerLocaleKey } from '../src/client/locales.ts'
+import { INSTALL_GIT_EXAMPLE, INSTALL_PATH_EXAMPLE, en, zh, type PluginManagerLocaleKey } from '../src/client/locales.ts'
 import type { PluginActivationOwnerProps, PluginDetailProps, PluginsSubject } from '../src/client/slot-contract.ts'
 
 afterEach(cleanup)
@@ -887,6 +887,7 @@ describe('PluginManagerPage', () => {
     const { actions, setLanguage } = renderTab({ install: { ...IDLE_INSTALL, open: true } })
     setLanguage(locale)
     expect(screen.getByPlaceholderText(placeholder)).toBeTruthy()
+    expect(screen.getByText(locale.installUpgradeNotice)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: locale.installGuideToggle }))
     expect(screen.getByText('dsh-plugin-whale-pet')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: locale.installGuideFillAria.replace('{example}', 'dsh-plugin-whale-pet') }))
@@ -894,8 +895,8 @@ describe('PluginManagerPage', () => {
   })
 
   it.each([
-    { example: en.installGuideGitExample, key: 'installGitTemplateHint' as const },
-    { example: en.installGuidePathExample, key: 'installPathTemplateHint' as const },
+    { example: INSTALL_GIT_EXAMPLE, key: 'installGitTemplateHint' as const },
+    { example: INSTALL_PATH_EXAMPLE, key: 'installPathTemplateHint' as const },
   ])('asks for a real value when the field holds $example, including after a language change', ({ example, key }) => {
     const install = { ...IDLE_INSTALL, open: true, spec: example }
     const { set, setLanguage } = renderTab({ install })
@@ -904,7 +905,7 @@ describe('PluginManagerPage', () => {
     expect(screen.getByRole('textbox', { name: en.installSpecLabel }).getAttribute('aria-describedby')).toBe(hint.id)
     setLanguage(zh)
     expect(screen.getByRole('status').textContent).toBe(zh[key])
-    expect(screen.getByRole('note').textContent).toBe(zh.installGuideSafety)
+    expect(screen.getByRole('note').textContent).toContain(zh.installGuideSafety)
     set({ install: { ...install, spec: '@actual/plugin' } })
     expect(screen.queryByRole('status')).toBeNull()
     expect(screen.getByRole('textbox', { name: zh.installSpecLabel }).getAttribute('aria-describedby')).toBeNull()
@@ -918,7 +919,7 @@ describe('PluginManagerPage', () => {
     fireEvent.click(toggle)
     expect(screen.getByRole('button', { name: en.installGuideHide }).getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText(en.installGuideIdHint)).toBeTruthy()
-    expect(screen.getByText(en.installGuideGitExample)).toBeTruthy()
+    expect(screen.getAllByRole('listitem')).toHaveLength(1)
     fireEvent.click(screen.getByRole('button', { name: en.installGuideFillAria.replace('{example}', en.installGuideIdExample) }))
     expect(actions.editInstallSpec).toHaveBeenCalledExactlyOnceWith(en.installGuideIdExample)
     fireEvent.click(screen.getByRole('button', { name: en.installGuideHide }))
@@ -964,9 +965,9 @@ describe('PluginManagerPage', () => {
     expect(within(detail).getByText(`${en.reasonLabel}: ${en.reasonOperationError}`)).toBeTruthy()
     // An incompatibility reads from its structured packages in the dictionary's words, one sentence per package.
     set({ packages: [pkg({ error: { code: 'incompatible-version', incompatible: [INCOMPATIBLE, { ...INCOMPATIBLE, name: 'other' }] } })] })
-    expect(within(detail).getByText(`${en.reasonLabel}: ${incompatibleText()} ${incompatibleText('other')}`)).toBeTruthy()
+    expect(within(detail).getByText(`${en.reasonLabel}: ${incompatibleText()} ${incompatibleText('other')} ${en.reasonIncompatibleInstalled}`)).toBeTruthy()
     set({ packages: [pkg({ error: { code: 'incompatible-version' } })] })
-    expect(within(detail).getByText(`${en.reasonLabel}: ${en.reasonIncompatibleVersionUnnamed}`)).toBeTruthy()
+    expect(within(detail).getByText(`${en.reasonLabel}: ${en.reasonIncompatibleVersionUnnamed} ${en.reasonIncompatibleInstalled}`)).toBeTruthy()
     fireEvent.click(within(detail).getByRole('button', { name: en.backToList }))
     expect(document.querySelector('[data-plugin-detail]')).toBeNull()
     // A bundle that leaves the list drops back to the cards.
@@ -1154,6 +1155,7 @@ describe('PluginManagerPage', () => {
     const problems: [string, string][] = [
       ['invalid-spec', en.installProblemInvalid.replace('{reason}', 'r')],
       ['already-installed', en.installProblemInstalled],
+      ['shipped', en.installProblemShipped],
       ['not-found', en.installProblemNotFound],
       ['not-a-package', en.installProblemNotPackage],
       ['not-a-bundle', en.installProblemNotBundle.replace('{reason}', 'r')],
@@ -1355,9 +1357,9 @@ describe('PluginManagerPage', () => {
     // A compatibility refusal outranks the kind pnpm's exit was classified as.
     set({ install: { ...IDLE_INSTALL, open: true, spec: 'x', phase: 'failed',
       failure: { reason: '', code: 'incompatible-version', incompatible: [INCOMPATIBLE], kind: 'unknown' } } })
-    expect(screen.getByText(incompatibleText())).toBeTruthy()
+    expect(screen.getByText(`${incompatibleText()} ${en.reasonIncompatibleInstall}`)).toBeTruthy()
     set({ install: { ...IDLE_INSTALL, open: true, spec: 'x', phase: 'failed', failure: { reason: '', code: 'incompatible-version' } } })
-    expect(screen.getByText(en.reasonIncompatibleVersionUnnamed)).toBeTruthy()
+    expect(screen.getByText(`${en.reasonIncompatibleVersionUnnamed} ${en.reasonIncompatibleInstall}`)).toBeTruthy()
     set({ install: { ...IDLE_INSTALL, open: true, spec: 'x', phase: 'failed', failure: { reason: 'the transport said so' } } })
     expect(screen.getByText('the transport said so')).toBeTruthy()
     set({ install: { ...IDLE_INSTALL, open: true, spec: 'x', phase: 'failed', failure: { reason: '' } } })
@@ -1432,10 +1434,10 @@ describe('PluginManagerPage', () => {
     fireEvent.click(screen.getByRole('button', { name: en.installTryAnotherWay }))
     expect(actions.useGithubMirror).toHaveBeenCalledOnce()
     expect(actions.runInstall).not.toHaveBeenCalled()
-    // The form it returns to opens the guide to the other kinds of spec.
+    // The form it returns to opens the guide to the package-name example.
     set({ install: { ...IDLE_INSTALL, open: true, mirrorRecovery: true, registries: REGISTRIES, registry: failed.registry } })
     expect(screen.getByRole('button', { name: en.installGuideHide }).getAttribute('aria-expanded')).toBe('true')
-    expect(screen.getByText(en.installGuidePathExample)).toBeTruthy()
+    expect(screen.getByText(en.installGuideIdHint)).toBeTruthy()
     // A typed address other than the mirror can still switch to it.
     set({ install: { ...failed, registry: { kind: 'custom', url: 'npm.corp' } } })
     expect(screen.getByRole('button', { name: en.installUseGithubMirror })).toBeTruthy()
@@ -1732,7 +1734,7 @@ describe('PluginManagerPage', () => {
       set({ notice: { kind: 'failed', action: 'uninstall', code: 'bundle-in-use', reason: '', packageName: 'pkg-1', seq: 5 } })
       expect(screen.getByRole('alert').textContent).toContain(en.failedUninstall.replace('{reason}', en.reasonBundleInUse))
       set({ notice: { kind: 'failed', action: 'enable', code: 'incompatible-version', incompatible: [INCOMPATIBLE], reason: '', packageName: 'pkg-1', seq: 5 } })
-      expect(screen.getByRole('alert').textContent).toContain(en.failedEnable.replace('{reason}', incompatibleText()))
+      expect(screen.getByRole('alert').textContent).toContain(en.failedEnable.replace('{reason}', `${incompatibleText()} ${en.reasonIncompatibleInstalled}`))
       set({ notice: { kind: 'failed', action: 'rowDisable', code: 'operation-error', reason: 'EACCES', packageName: 'pkg-1', seq: 6 } })
       expect(screen.getByRole('alert').textContent).toContain(en.failedRowDisable.replace('{reason}', 'EACCES'))
       set({ notice: { kind: 'failed', action: 'disable', reason: '', packageName: 'pkg-1', seq: 7 } })

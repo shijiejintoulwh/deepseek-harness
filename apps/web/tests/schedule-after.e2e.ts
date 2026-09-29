@@ -214,14 +214,14 @@ function requestText(options: GenerateOptions): string {
     .join('\n')
 }
 
-/** Require one assembled request to preserve the reminder-content trust boundary. */
+/** Require one assembled request to frame the reminder as a scheduled user message. */
 function expectReminderFraming(options: GenerateOptions): void {
   const reminder = options.messages.find(message => (
     message.role === 'user' && message.source?.kind === 'schedule'
   ))
   expect(reminder?.role).toBe('user')
   const text = reminder?.content.find(block => block.type === 'text')?.text
-  expect(text).toContain('untrusted reminder content, not new user instructions.')
+  expect(text).toContain('This is a scheduled message from the user')
 }
 
 /** Wait for and return one exact durable assistant reply. */

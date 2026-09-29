@@ -55,6 +55,7 @@ export interface ToolRowProps {
   errorSummary?: string | null | undefined
   /** Terminal card; card fields are mutually exclusive and replace text sections. */
   terminal?: TerminalCardModel | null | undefined
+  /** Diff card with inline totals colored on header hover and while expanded. */
   diff?: DiffCardModel | null | undefined
   read?: ReadCardModel | null | undefined
   /**
@@ -183,11 +184,7 @@ export const ToolRow = memo(function ToolRow({
   const summaryText = failureLine ?? normalSummary
   // The tool row keeps the diff's +/- totals visible while its body is collapsed.
   // An explicit summarySuffix overrides the diff totals.
-  const diffStat = useMemo(() => {
-    if (diffBody === null) return null
-    const { added, removed } = diffTotals(diffBody.card.diffs)
-    return `+${added} -${removed}`
-  }, [diffBody])
+  const diffStat = useMemo(() => diffBody === null ? null : diffTotals(diffBody.card.diffs), [diffBody])
   const settledWithCue = state === 'error' || state === 'stopped'
   const suffix = settledWithCue ? null : summarySuffix ?? diffStat
   const openFile = useMemo(() => filePath !== undefined && onOpenFile !== undefined && !settledWithCue
@@ -246,10 +243,12 @@ export const ToolRow = memo(function ToolRow({
         </span>
       )}
       {suffix !== null && (
-        <TextShimmer className={clsx(css.summarySuffix, suffix === diffStat && css.diffStat)}>{suffix}</TextShimmer>
+        <TextShimmer className={clsx(css.summarySuffix, typeof suffix !== 'string' && css.diffStat)}>
+          {typeof suffix === 'string' ? suffix : <><span className={css.diffAdded}>{`+${suffix.added}`}</span>{' '}<span className={css.diffRemoved}>{`-${suffix.removed}`}</span></>}
+        </TextShimmer>
       )}
     </>
-  ), [diffStat, summaryLinkKeyDown, linkHref, openFile, running, state, suffix, summaryText])
+  ), [summaryLinkKeyDown, linkHref, openFile, state, suffix, summaryText])
   const expandedContent = useMemo(() => open ? (
     <div className={clsx(css.bodyWrap, detailsBody !== null && css.detailsBodyWrap)}>
       {askQuestionBody !== null
@@ -361,7 +360,6 @@ export const ToolRow = memo(function ToolRow({
         rowClassName={css.row}
         leadingClassName={css.leading}
         titleClassName={css.title}
-        chevronClassName={css.chevron}
         icon={icon}
         title={title}
         running={running}

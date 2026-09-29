@@ -56,8 +56,12 @@ it('keeps settings and expanded plugin dialogs clear of the Windows caption acro
       for (const fullscreen of [false, true, false]) {
         await page.evaluate(value => document.documentElement.toggleAttribute('data-fullscreen', value), fullscreen)
         const margin = fullscreen ? 24 : 60
-        await expect.poll(async () => (await plugin.boundingBox())?.y).toBe(margin)
-        expect((await plugin.boundingBox())?.height).toBe(600 - 2 * margin)
+        // The dialog is content-sized: it fills the available height only while its content needs it,
+        // and otherwise stays centered inside the same clearances.
+        await expect.poll(async () => {
+          const box = await plugin.boundingBox()
+          return box !== null && box.y >= margin && box.y + box.height <= 600 - margin
+        }, { timeout: 5_000 }).toBe(true)
         expect((await plugin.locator('..').locator(':scope > [aria-hidden="true"]').boundingBox())?.y).toBe(fullscreen ? 0 : 40)
         expect(await plugin.getByRole('button', { name: '关闭', exact: true }).isVisible()).toBe(true)
         expect(await plugin.getByRole('button', { name: '安装', exact: true }).isVisible()).toBe(true)
