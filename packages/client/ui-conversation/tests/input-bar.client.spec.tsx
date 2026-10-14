@@ -16,7 +16,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { createPortal } from 'react-dom'
 import { $getRoot, $isTextNode } from 'lexical'
 import {
-  bindSnapshotSelector, conversationSnapshot as conversationFixture, makeTranslate, RemoteError,
+  allowAllAccess, bindSnapshotSelector, conversationSnapshot as conversationFixture, makeTranslate, RemoteError,
   sessionSnapshot as sessionFixture,
 } from '@deepseek-ai/dsh-client-test-runtime'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -191,6 +191,7 @@ function bench(over?: BenchOptions) {
     useWorkspaces: bindSnapshotSelector(createSnapshotStore({
       items: [], archivedSessionIds: [], pinnedSessionIds: [], state: 'idle', phase: 'ready', error: null,
     })),
+    ...allowAllAccess,
     useProjection: ((key: string, selector?: (v: unknown) => unknown) =>
       (selector ?? (v => v))(key === 'plan'
         ? over?.plan
